@@ -2,10 +2,6 @@
 
 ## 1. Project Overview
 WSO2 requires a streamlined, automated way to collect evidence for compliance frameworks (SOC2, PCI-DSS, HIPAA). This project replaces manual "screenshot-and-upload" workflows with an AI-driven agent capable of navigating cloud portals and managing artifacts in a centralized, versioned store.
-
-**Duration:** 2 Months  
-**Team Size:** 1 Person (Solo)
-
 ---
 
 ## 2. High-Level System Architecture
