@@ -30,3 +30,8 @@ export const submissionsApi = {
   create: (data: { evidence_id: number; submitted_by: string; notes?: string }) =>
     api.post("/submissions/", data).then((r) => r.data),
 };
+
+export const agentApi = {
+  run: (prompt: string) =>
+    api.post("/agent/run", { prompt }).then((r) => r.data),
+};
