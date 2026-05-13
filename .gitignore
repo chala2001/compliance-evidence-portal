@@ -27,12 +27,18 @@ env/
 .DS_Store
 Thumbs.db
 
+# SQLite (not used — PostgreSQL only)
+*.db
+*.sqlite
+*.sqlite3
+
 # Node
 node_modules/
 
 # Logs
 *.log
 
+#md files
 Compliance-Evidence-Submission-Portal.md
 MEMORY.md
 project_llm_providers.md
