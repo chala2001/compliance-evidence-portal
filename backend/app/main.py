@@ -2,7 +2,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.api.routes import frameworks, controls, evidence, submissions
+from app.api.routes import frameworks, controls, evidence, submissions, agent
 
 app = FastAPI(title="Compliance Evidence Portal", version="1.0.0")
 
@@ -21,6 +21,7 @@ app.include_router(frameworks.router, prefix="/api")
 app.include_router(controls.router, prefix="/api")
 app.include_router(evidence.router, prefix="/api")
 app.include_router(submissions.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 
 
 @app.get("/health")
