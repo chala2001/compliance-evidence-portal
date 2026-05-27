@@ -1,10 +1,26 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import Box from "@mui/material/Box";
+import Typography from "@mui/material/Typography";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import Select from "@mui/material/Select";
+import MenuItem from "@mui/material/MenuItem";
+import Paper from "@mui/material/Paper";
+import Table from "@mui/material/Table";
+import TableBody from "@mui/material/TableBody";
+import TableCell from "@mui/material/TableCell";
+import TableContainer from "@mui/material/TableContainer";
+import TableHead from "@mui/material/TableHead";
+import TableRow from "@mui/material/TableRow";
+import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
+import Link from "@mui/material/Link";
 import { evidenceApi, frameworksApi, controlsApi } from "../api/client";
 
 export default function EvidenceList() {
   const queryClient = useQueryClient();
-  const [selectedFramework, setSelectedFramework] = useState<number | undefined>();
+  const [selectedFramework, setSelectedFramework] = useState<number | "">("");
 
   const { data: evidence = [], isLoading } = useQuery({
     queryKey: ["evidence"],
@@ -15,8 +31,8 @@ export default function EvidenceList() {
     queryFn: frameworksApi.list,
   });
   const { data: controls = [] } = useQuery({
-    queryKey: ["controls", selectedFramework],
-    queryFn: () => controlsApi.list(selectedFramework),
+    queryKey: ["controls", selectedFramework || undefined],
+    queryFn: () => controlsApi.list(selectedFramework || undefined),
   });
 
   const deleteMutation = useMutation({
@@ -30,61 +46,76 @@ export default function EvidenceList() {
   };
 
   return (
-    <div className="page">
-      <h1>Evidence</h1>
+    <Box>
+      <Typography variant="h4" fontWeight={700} gutterBottom>
+        Evidence
+      </Typography>
 
-      <div className="filters">
-        <select
-          value={selectedFramework ?? ""}
-          onChange={(e) => setSelectedFramework(e.target.value ? Number(e.target.value) : undefined)}
+      <FormControl size="small" sx={{ mb: 2, minWidth: 200 }}>
+        <InputLabel>Framework</InputLabel>
+        <Select
+          label="Framework"
+          value={selectedFramework}
+          onChange={(e) => setSelectedFramework(e.target.value as number | "")}
         >
-          <option value="">All Frameworks</option>
+          <MenuItem value="">All Frameworks</MenuItem>
           {frameworks.map((f: any) => (
-            <option key={f.id} value={f.id}>{f.name}</option>
+            <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
           ))}
-        </select>
-      </div>
+        </Select>
+      </FormControl>
 
       {isLoading ? (
-        <p>Loading...</p>
+        <Box display="flex" justifyContent="center" py={6}>
+          <CircularProgress />
+        </Box>
       ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>File</th>
-              <th>Control</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {evidence.map((e: any) => (
-              <tr key={e.id}>
-                <td>{e.title}</td>
-                <td>
-                  <a href={`http://localhost:8000${e.file_url}`} target="_blank" rel="noreferrer">
-                    {e.file_name}
-                  </a>
-                </td>
-                <td>{getControlRef(e.control_id)}</td>
-                <td>{new Date(e.created_at).toLocaleDateString()}</td>
-                <td>
-                  <button
-                    className="btn btn-danger"
-                    onClick={() => deleteMutation.mutate(e.id)}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {evidence.length === 0 && (
-              <tr><td colSpan={5} className="empty">No evidence found</td></tr>
-            )}
-          </tbody>
-        </table>
+        <TableContainer component={Paper} variant="outlined">
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell>Title</TableCell>
+                <TableCell>File</TableCell>
+                <TableCell>Control</TableCell>
+                <TableCell>Created</TableCell>
+                <TableCell>Actions</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {evidence.map((e: any) => (
+                <TableRow key={e.id} hover>
+                  <TableCell>{e.title}</TableCell>
+                  <TableCell>
+                    <Link href={`http://localhost:8000${e.file_url}`} target="_blank" rel="noreferrer" underline="hover">
+                      {e.file_name}
+                    </Link>
+                  </TableCell>
+                  <TableCell>{getControlRef(e.control_id)}</TableCell>
+                  <TableCell>{new Date(e.created_at).toLocaleDateString()}</TableCell>
+                  <TableCell>
+                    <Button
+                      size="small"
+                      color="error"
+                      variant="outlined"
+                      onClick={() => deleteMutation.mutate(e.id)}
+                      disabled={deleteMutation.isPending}
+                    >
+                      Delete
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {evidence.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={5} align="center" sx={{ color: "text.disabled", py: 3 }}>
+                    No evidence found
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
       )}
-    </div>
+    </Box>
   );
 }

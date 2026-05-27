@@ -65,17 +65,15 @@ sqlalchemy.url = driver://user:pass@localhost/dbname
 Change it to:
 
 ```ini
-sqlalchemy.url = sqlite:///./compliance.db
+sqlalchemy.url = postgresql://complianceuser:compliancepass@localhost:5432/compliance_db
 ```
 
-**Why:** Alembic reads this URL to connect to the database when running migrations.
-This must match the `DATABASE_URL` in your `.env` file.
+**Why:** This is the fallback URL Alembic reads if `env.py` doesn't override it.
+In practice, `env.py` overrides it using the `DATABASE_URL` from your `.env` file
+(see Section 4 below), so this line rarely matters — but it must be a valid placeholder.
 
-The path `./compliance.db` is relative to the directory where you run `alembic` commands.
-Since you always run them from `backend/`, this creates `backend/compliance.db`.
-
-> **For PostgreSQL production:** Change this line to:
-> `sqlalchemy.url = postgresql://complianceuser:compliancepass@localhost:5432/compliance_db`
+> **Note:** This project uses PostgreSQL exclusively (no SQLite). Start the database with
+> `docker-compose up -d` before running migrations.
 
 ---
 
@@ -96,11 +94,14 @@ from alembic import context
 
 from app.database import Base
 from app.models import framework, control, evidence, submission  # noqa: F401
+from app.config import settings
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
 target_metadata = Base.metadata
 
@@ -145,15 +146,20 @@ else:
 ```python
 from app.database import Base
 from app.models import framework, control, evidence, submission  # noqa: F401
+from app.config import settings
 ```
 These imports are critical.
 
 - `Base` carries `Base.metadata` — a registry of every table defined in your models
-- The model imports (`framework`, `control`, etc.) trigger Python to load each model class,
-  registering it with `Base.metadata`
-- Without these imports, `Base.metadata` is empty and Alembic cannot detect your tables
-- `# noqa: F401` — tells linters not to warn about "imported but unused" — they ARE used,
-  just as a side effect of registration, not by name
+- The model imports trigger Python to load each model class, registering it with `Base.metadata`
+- `settings` is imported to read `DATABASE_URL` from `.env`
+- `# noqa: F401` — tells linters not to warn about "imported but unused"
+
+```python
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+```
+Overrides the `sqlalchemy.url` in `alembic.ini` with the value from your `.env` file.
+This means you only need to update `DATABASE_URL` in `.env` — no need to keep `alembic.ini` in sync.
 
 ```python
 target_metadata = Base.metadata
@@ -355,33 +361,39 @@ INFO  [alembic.runtime.migration] Running upgrade  -> 57b39d9adcfc, initial tabl
 ```
 
 After this command:
-- `backend/compliance.db` is created (SQLite database file)
-- It contains 5 tables: `frameworks`, `controls`, `evidence`, `submissions`, `alembic_version`
+- All 4 tables are created inside PostgreSQL: `frameworks`, `controls`, `evidence`, `submissions`
+- An `alembic_version` table is also created to track which migrations have been applied
 
 ---
 
 ## 8. Verify the Tables Were Created
 
 ```bash
-# Install sqlite3 if not available
-# sudo apt install sqlite3
-
-sqlite3 backend/compliance.db ".tables"
+# Connect to PostgreSQL and list tables
+docker exec -it compliance-evidence-submission-portal-postgres-1 \
+  psql -U complianceuser -d compliance_db -c "\dt"
 ```
 
 Expected output:
 ```
-alembic_version  controls   evidence   frameworks   submissions
+ Schema |      Name       | Type  |     Owner
+--------+-----------------+-------+----------------
+ public | alembic_version | table | complianceuser
+ public | controls        | table | complianceuser
+ public | evidence        | table | complianceuser
+ public | frameworks      | table | complianceuser
+ public | submissions     | table | complianceuser
 ```
 
-Check the alembic version table (tracks which migrations have been applied):
+Check which migration has been applied:
 ```bash
-sqlite3 backend/compliance.db "SELECT * FROM alembic_version;"
+cd backend && source venv/bin/activate
+python -m alembic current
 ```
 
 Expected output:
 ```
-57b39d9adcfc
+57b39d9adcfc (head)
 ```
 
 ---

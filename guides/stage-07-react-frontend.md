@@ -296,6 +296,11 @@ export const submissionsApi = {
   create: (data: { evidence_id: number; submitted_by: string; notes?: string }) =>
     api.post("/submissions/", data).then((r) => r.data),
 };
+
+export const agentApi = {
+  run: (prompt: string) =>
+    api.post("/agent/run", { prompt }).then((r) => r.data),
+};
 ```
 
 **Line-by-line explanation:**
@@ -550,8 +555,9 @@ const handleSubmit = (e: React.FormEvent) => {
 
 `SubmissionHistory` is a simple read-only page using `useQuery` to list submissions in a table.
 
-`AgentRunner` is a **placeholder** — it shows a text area for the prompt and simulates a
-response with `setTimeout`. The real API will be wired in Stage 08 (Phase 6).
+`AgentRunner` is fully implemented — it connects to `POST /api/agent/run` via `agentApi.run()`,
+shows a loading state while the agent runs, and renders the result text and screenshot when done.
+See Stage 08 for a full walkthrough of how the backend and frontend agent pieces fit together.
 
 ---
 
@@ -657,7 +663,7 @@ The difference from production:
 
 ## 17. Next Stage
 
-The React frontend is complete (through Phase 5). The AgentRunner page shows a placeholder.
+The React frontend is complete. The AgentRunner page is fully wired to the backend.
 
-Move on to [stage-08-ai-agent.md](stage-08-ai-agent.md) to implement Phase 6 — the AI
-browser agent that navigates portals autonomously.
+See [stage-08-ai-agent.md](stage-08-ai-agent.md) for a detailed walkthrough of the AI agent
+layer — how `runner.py`, the agent route, and the frontend UI all fit together.
