@@ -1,10 +1,21 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import Box from "@mui/material/Box";
+import Typography from "@mui/material/Typography";
+import Paper from "@mui/material/Paper";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import Select from "@mui/material/Select";
+import MenuItem from "@mui/material/MenuItem";
+import Button from "@mui/material/Button";
+import Alert from "@mui/material/Alert";
 import { frameworksApi, controlsApi, evidenceApi } from "../api/client";
 
 export default function SubmitEvidence() {
-  const [frameworkId, setFrameworkId] = useState<number | undefined>();
-  const [controlId, setControlId] = useState<number | undefined>();
+  const [frameworkId, setFrameworkId] = useState<number | "">("");
+  const [controlId, setControlId] = useState<number | "">("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -15,8 +26,8 @@ export default function SubmitEvidence() {
     queryFn: frameworksApi.list,
   });
   const { data: controls = [] } = useQuery({
-    queryKey: ["controls", frameworkId],
-    queryFn: () => controlsApi.list(frameworkId),
+    queryKey: ["controls", frameworkId || undefined],
+    queryFn: () => controlsApi.list(frameworkId || undefined),
     enabled: !!frameworkId,
   });
 
@@ -27,13 +38,15 @@ export default function SubmitEvidence() {
       setTitle("");
       setDescription("");
       setFile(null);
-      setControlId(undefined);
+      setFrameworkId("");
+      setControlId("");
     },
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!file || !controlId) return;
+    setSuccess(false);
     const formData = new FormData();
     formData.append("title", title);
     formData.append("description", description);
@@ -43,81 +56,91 @@ export default function SubmitEvidence() {
   };
 
   return (
-    <div className="page">
-      <h1>Submit Evidence</h1>
+    <Box>
+      <Typography variant="h4" fontWeight={700} gutterBottom>
+        Submit Evidence
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
+        Upload a file and link it to a compliance control.
+      </Typography>
 
       {success && (
-        <div className="alert alert-success">Evidence submitted successfully.</div>
+        <Alert severity="success" sx={{ mb: 3 }}>
+          Evidence submitted successfully.
+        </Alert>
       )}
 
-      <form className="form" onSubmit={handleSubmit}>
-        <div className="form-group">
-          <label>Framework</label>
-          <select
-            value={frameworkId ?? ""}
-            onChange={(e) => { setFrameworkId(Number(e.target.value)); setControlId(undefined); }}
-            required
-          >
-            <option value="">Select framework</option>
-            {frameworks.map((f: any) => (
-              <option key={f.id} value={f.id}>{f.name}</option>
-            ))}
-          </select>
-        </div>
+      <Paper variant="outlined" sx={{ p: 3, maxWidth: 560 }}>
+        <Box component="form" onSubmit={handleSubmit}>
+          <Stack spacing={2.5}>
+            <FormControl fullWidth required>
+              <InputLabel>Framework</InputLabel>
+              <Select
+                label="Framework"
+                value={frameworkId}
+                onChange={(e) => { setFrameworkId(e.target.value as number); setControlId(""); }}
+              >
+                {frameworks.map((f: any) => (
+                  <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
 
-        <div className="form-group">
-          <label>Control</label>
-          <select
-            value={controlId ?? ""}
-            onChange={(e) => setControlId(Number(e.target.value))}
-            disabled={!frameworkId}
-            required
-          >
-            <option value="">Select control</option>
-            {controls.map((c: any) => (
-              <option key={c.id} value={c.id}>{c.control_ref} — {c.title}</option>
-            ))}
-          </select>
-        </div>
+            <FormControl fullWidth required disabled={!frameworkId}>
+              <InputLabel>Control</InputLabel>
+              <Select
+                label="Control"
+                value={controlId}
+                onChange={(e) => setControlId(e.target.value as number)}
+              >
+                {controls.map((c: any) => (
+                  <MenuItem key={c.id} value={c.id}>{c.control_ref} — {c.title}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
 
-        <div className="form-group">
-          <label>Title</label>
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Evidence title"
-            required
-          />
-        </div>
+            <TextField
+              label="Title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Evidence title"
+              required
+              fullWidth
+            />
 
-        <div className="form-group">
-          <label>Description</label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Optional description"
-            rows={3}
-          />
-        </div>
+            <TextField
+              label="Description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Optional description"
+              multiline
+              rows={3}
+              fullWidth
+            />
 
-        <div className="form-group">
-          <label>File</label>
-          <input
-            type="file"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            required
-          />
-        </div>
+            <Box>
+              <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
+                File *
+              </Typography>
+              <input
+                type="file"
+                required
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                style={{ width: "100%" }}
+              />
+            </Box>
 
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={mutation.isPending}
-        >
-          {mutation.isPending ? "Uploading..." : "Submit Evidence"}
-        </button>
-      </form>
-    </div>
+            <Button
+              type="submit"
+              variant="contained"
+              disabled={mutation.isPending}
+              size="large"
+            >
+              {mutation.isPending ? "Uploading..." : "Submit Evidence"}
+            </Button>
+          </Stack>
+        </Box>
+      </Paper>
+    </Box>
   );
 }

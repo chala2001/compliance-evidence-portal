@@ -1,10 +1,9 @@
-# Stage 08 — AI Agent Layer (Phase 6)
+# Stage 08 — AI Agent Layer (Phase 6) ✅
 
-This stage adds the AI agent capability. An LLM controls a real Chrome browser, navigates to
-cloud portals, takes screenshots, and saves them as evidence — all from a natural language prompt.
+This stage adds the AI agent capability. An LLM controls a real Chrome browser, navigates
+cloud portals, takes screenshots, and returns them as evidence — driven by a natural language prompt.
 
-This stage has **not been implemented yet** in the current codebase.
-The `AgentRunner.tsx` frontend page has a placeholder. This guide tells you exactly what to build.
+**Status: Implemented.** All files described here exist in the codebase.
 
 ---
 
@@ -24,20 +23,19 @@ and a real web browser controlled by Playwright.
      click(element_index)       → click element #5
      input(element_index, text) → type this text into a field
      scroll(direction)          → scroll the page
-     screenshot()               → capture and save this page
      done(result)               → task is complete, return this result
 5. Execute the action via Playwright
 6. Go back to step 1
 ```
 
-This continues until the LLM calls `done()` or a max number of steps is reached.
+This continues until the LLM calls `done()` or `max_steps` is reached.
 
 The key insight: **you don't write specific Playwright scripts for each portal**.
 You give the LLM a goal in English and it figures out the steps by looking at the page.
 
 ---
 
-## 2. Install Required Packages
+## 2. Packages Installed
 
 ```bash
 cd backend
@@ -45,51 +43,20 @@ source venv/bin/activate
 
 pip install browser-use playwright
 python -m playwright install chromium
+
+# LLM providers (install the ones you need):
+pip install langchain-google-genai   # Google Gemini
+pip install langchain-anthropic      # Anthropic Claude
+pip install langchain-ollama         # Ollama (local)
 ```
 
-**What each command does:**
-
-- `pip install browser-use` — installs the browser-use library and its dependencies
-  (includes langchain LLM integrations)
-- `pip install playwright` — installs the Playwright browser automation library
-- `python -m playwright install chromium` — downloads the Chromium browser binaries
-
-**Also install an LLM provider. Choose one:**
-
-```bash
-# Option A: Google Gemini (free tier available)
-pip install langchain-google-genai
-
-# Option B: Anthropic Claude (paid API)
-pip install langchain-anthropic
-
-# Option C: Ollama (free, runs locally — no API key)
-pip install langchain-ollama
-# Then download a model:
-ollama pull qwen2.5:7b
-```
-
-**Update `backend/.env` with your API key:**
-
-For Gemini:
-```
-DATABASE_URL=sqlite:///./compliance.db
-GEMINI_API_KEY=your_gemini_key_here
-```
-
-For Anthropic:
-```
-DATABASE_URL=sqlite:///./compliance.db
-ANTHROPIC_API_KEY=your_anthropic_key_here
-```
-
-For Ollama: no API key needed — Ollama runs locally on your machine.
+The agent uses **system Chrome** (`channel="chrome"`) rather than Playwright's downloaded
+Chromium. This avoids macOS Gatekeeper issues and lets the agent reuse your existing
+browser sessions (logged-in cookies, saved passwords).
 
 ---
 
-## 3. Update `app/config.py`
-
-Add the API key fields so they're readable throughout the app:
+## 3. `app/config.py` — LLM Provider Config
 
 ```python
 from pydantic_settings import BaseSettings
@@ -97,8 +64,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     DATABASE_URL: str
-    GEMINI_API_KEY: str | None = None
-    ANTHROPIC_API_KEY: str | None = None
+    GEMINI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    AGENT_PROVIDER: str = "ollama"  # "ollama" | "anthropic" | "gemini"
+    AGENT_MODEL: str = "qwen2.5:7b"
 
     class Config:
         env_file = ".env"
@@ -107,508 +76,264 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
-- `str | None = None` — optional fields with a default of None
-- If you don't set these in `.env`, they're `None` and the app still starts
-
----
-
-## 4. Create `backend/app/agent/` Package
-
-```bash
-mkdir -p backend/app/agent
-touch backend/app/agent/__init__.py
+Switch providers by editing `backend/.env`:
+```
+AGENT_PROVIDER=gemini
+AGENT_MODEL=gemini-2.0-flash
+GEMINI_API_KEY=your_key_here
 ```
 
+No code changes required — `runner.py` reads these at startup.
+
 ---
 
-## 5. Create `backend/app/agent/runner.py`
-
-This file contains the core agent execution function.
+## 4. `app/agent/runner.py` — Core Agent Execution
 
 ```python
-import asyncio
-import base64
+import uuid
 from pathlib import Path
-from browser_use import Agent, BrowserSession, BrowserProfile
+
+from browser_use import Agent, BrowserProfile, BrowserSession
+
 from app.config import settings
-from app.storage.local_storage import UPLOAD_DIR
+
+UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
 
 
-def _create_llm(provider: str = "gemini"):
-    """Return an LLM instance based on provider name."""
-    if provider == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            api_key=settings.GEMINI_API_KEY,
-        )
-    elif provider == "anthropic":
+def _build_llm():
+    provider = settings.AGENT_PROVIDER
+    model = settings.AGENT_MODEL
+
+    if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(
-            model="claude-sonnet-4-6",
+            model=model or "claude-haiku-4-5-20251001",
             api_key=settings.ANTHROPIC_API_KEY,
         )
-    elif provider == "ollama":
-        from langchain_ollama import ChatOllama
-        return ChatOllama(model="qwen2.5:7b")
-    else:
-        raise ValueError(f"Unknown provider: {provider}")
-
-
-async def run_agent(prompt: str, provider: str = "gemini") -> dict:
-    """
-    Run the browser agent with the given prompt.
-    Returns {"result": str, "screenshot_url": str | None}.
-    """
-    llm = _create_llm(provider)
-
-    profile = BrowserProfile(
-        headless=True,   # True = invisible browser (good for server)
-                         # False = visible browser (good for debugging)
-    )
-    browser = BrowserSession(browser_profile=profile)
-
-    agent = Agent(task=prompt, llm=llm, browser=browser)
-
-    history = await agent.run()
-
-    result_text = history.final_result() or "Agent completed without a final result."
-
-    screenshot_url = None
-    screenshots = history.screenshots(n_last=1)
-    if screenshots:
-        raw_b64 = screenshots[0]
-        if raw_b64.startswith("data:image"):
-            raw_b64 = raw_b64.split(",", 1)[1]
-        image_bytes = base64.b64decode(raw_b64)
-
-        from uuid import uuid4
-        filename = f"{uuid4()}.png"
-        destination = UPLOAD_DIR / filename
-        destination.write_bytes(image_bytes)
-        screenshot_url = f"/uploads/{filename}"
-
-    return {"result": result_text, "screenshot_url": screenshot_url}
-```
-
-**Line-by-line explanation:**
-
-```python
-import asyncio
-```
-Python's async/await standard library. `browser-use`'s `agent.run()` is an async function —
-it must be awaited. FastAPI supports async route handlers natively.
-
-```python
-import base64
-```
-Standard library for encoding/decoding binary data as ASCII text.
-Playwright screenshots are returned as base64-encoded PNG strings.
-
-```python
-from browser_use import Agent, BrowserSession, BrowserProfile
-```
-The three core browser-use classes:
-- `Agent` — the main agent that connects an LLM to a browser
-- `BrowserSession` — represents an active browser session
-- `BrowserProfile` — configuration for the browser (headless, channel, etc.)
-
-```python
-def _create_llm(provider: str = "gemini"):
-```
-A helper function that returns the appropriate LLM object based on the provider name.
-The underscore prefix (`_`) is a Python convention meaning "private/internal function".
-
-```python
-    if provider == "gemini":
+    elif provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            api_key=settings.GEMINI_API_KEY,
+            model=model or "gemini-2.0-flash",
+            google_api_key=settings.GEMINI_API_KEY,
         )
-```
-Lazy import — the `langchain-google-genai` package is only imported if you're using Gemini.
-This avoids import errors if you haven't installed that specific provider package.
+    else:
+        from browser_use import ChatOllama
+        return ChatOllama(model=model or "qwen2.5:7b")
 
-```python
-    profile = BrowserProfile(
-        headless=True,
-    )
-```
-`headless=True` — Chrome runs without a visible window. In a server environment you must use
-headless mode (no display available). For local debugging, set to `False` to watch the agent work.
 
-```python
+async def run_agent(prompt: str) -> dict:
+    llm = _build_llm()
+
+    profile = BrowserProfile(channel="chrome", headless=False)
     browser = BrowserSession(browser_profile=profile)
+
     agent = Agent(task=prompt, llm=llm, browser=browser)
-    history = await agent.run()
-```
-- `BrowserSession` — wraps the browser, opens it when needed
-- `Agent(task=prompt, ...)` — creates the agent with your prompt as the goal
-- `await agent.run()` — runs the agentic loop until done or max steps reached
-- Returns `AgentHistoryList` containing every step taken
+    history = await agent.run(max_steps=15)
 
-```python
-    result_text = history.final_result() or "Agent completed without a final result."
-```
-`final_result()` returns the text the agent passed to `done(result)`. May be None if the
-agent ran out of steps without completing.
+    final_result = history.final_result() or "Task completed"
 
-```python
-    screenshots = history.screenshots(n_last=1)
-    if screenshots:
-        raw_b64 = screenshots[0]
-        if raw_b64.startswith("data:image"):
-            raw_b64 = raw_b64.split(",", 1)[1]
-        image_bytes = base64.b64decode(raw_b64)
-```
-- `n_last=1` — get only the last screenshot (most relevant to the final result)
-- Screenshots are base64 strings, sometimes prefixed with `data:image/png;base64,`
-- Split on `,` to remove the prefix, decode the base64 to raw bytes
+    screenshot_url = None
+    try:
+        page = await browser.get_current_page()
+        screenshot_bytes = await page.screenshot()
+        screenshot_name = f"{uuid.uuid4()}.png"
+        screenshot_path = UPLOAD_DIR / screenshot_name
+        screenshot_path.write_bytes(screenshot_bytes)
+        screenshot_url = f"/uploads/{screenshot_name}"
+    except Exception:
+        pass
 
-```python
-        filename = f"{uuid4()}.png"
-        destination = UPLOAD_DIR / filename
-        destination.write_bytes(image_bytes)
-        screenshot_url = f"/uploads/{filename}"
+    return {
+        "status": "completed",
+        "result": str(final_result),
+        "screenshot_url": screenshot_url,
+    }
 ```
-Save the screenshot to the uploads directory using the same UUID naming convention.
-It becomes available at `http://localhost:8000/uploads/<filename>`.
+
+**Key design decisions:**
+
+| Decision | Reason |
+|---|---|
+| `channel="chrome"` | Uses system Chrome; avoids macOS Gatekeeper blocking Playwright's Chromium |
+| `headless=False` | Visible browser — lets you watch the agent work and reuse logged-in sessions |
+| `max_steps=15` | Caps runaway agents; increase for complex multi-page tasks |
+| `_build_llm()` reads from settings | Swap providers via `.env` with no code changes |
+| Screenshot via `browser.get_current_page()` | Captures the final page state after the agent finishes |
 
 ---
 
-## 6. Create `backend/app/api/routes/agent.py`
+## 5. `app/api/routes/agent.py` — FastAPI Route
 
 ```python
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
 from app.agent.runner import run_agent
-import asyncio
 
 router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
 class AgentRequest(BaseModel):
     prompt: str
-    provider: str = "gemini"
 
 
-class AgentResponse(BaseModel):
-    status: str
-    result: str
-    screenshot_url: str | None = None
-
-
-@router.post("/run", response_model=AgentResponse)
-async def run_agent_endpoint(payload: AgentRequest):
-    result = await run_agent(payload.prompt, payload.provider)
-    return AgentResponse(
-        status="completed",
-        result=result["result"],
-        screenshot_url=result["screenshot_url"],
-    )
+@router.post("/run")
+async def run_agent_task(request: AgentRequest):
+    if not request.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+    result = await run_agent(request.prompt)
+    return result
 ```
 
-**Key concept — `async def`:**
-
-```python
-@router.post("/run", response_model=AgentResponse)
-async def run_agent_endpoint(payload: AgentRequest):
-    result = await run_agent(payload.prompt, payload.provider)
-```
-
-`async def` declares an async function. FastAPI automatically runs async route handlers
-in Python's event loop.
-
-`await run_agent(...)` pauses this function and gives control back to the event loop while
-the agent runs (which takes seconds to minutes). Other requests can be handled during this time.
-
-If you used `def` (synchronous), the entire server would be blocked until the agent finishes —
-no other requests could be handled.
+The route is `async def` because `run_agent` is async — it must `await` the browser agent.
+FastAPI runs async handlers on the event loop, so other requests aren't blocked while the
+agent executes (which typically takes 30–120 seconds).
 
 ---
 
-## 7. Register the Agent Router in `main.py`
-
-Update `backend/app/main.py`:
+## 6. Registered in `app/main.py`
 
 ```python
 from app.api.routes import frameworks, controls, evidence, submissions, agent
 
-# ...existing code...
-
 app.include_router(agent.router, prefix="/api")
 ```
 
+This registers `POST /api/agent/run`.
+
 ---
 
-## 8. Update `frontend/src/api/client.ts`
-
-Add the agent API at the end of the file:
+## 7. Frontend — `src/api/client.ts`
 
 ```typescript
 export const agentApi = {
-  run: (prompt: string, provider: string = "gemini") =>
-    api.post("/agent/run", { prompt, provider }).then((r) => r.data),
+  run: (prompt: string) =>
+    api.post("/agent/run", { prompt }).then((r) => r.data),
 };
 ```
 
 ---
 
-## 9. Update `frontend/src/pages/AgentRunner.tsx`
+## 8. Frontend — `src/pages/AgentRunner.tsx`
 
-Replace the placeholder page with the real implementation:
+The page manages four states:
 
-```tsx
-import { useState } from "react";
-import { agentApi } from "../api/client";
+| State | What the user sees |
+|---|---|
+| `idle` | Empty form, "Run Agent" button |
+| `running` | Button disabled, "Agent is navigating…" message |
+| `done` | Result text + screenshot image |
+| `error` | Red error box with the backend's error detail |
 
-export default function AgentRunner() {
-  const [prompt, setPrompt] = useState("");
-  const [provider, setProvider] = useState("gemini");
-  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
-  const [result, setResult] = useState<string | null>(null);
-  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+On submit it calls `agentApi.run(prompt)`, waits for the response, then populates
+`result` and `screenshotUrl` from `data.result` and `data.screenshot_url`.
 
-  const handleRun = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!prompt.trim()) return;
+---
 
-    setStatus("running");
-    setResult(null);
-    setScreenshotUrl(null);
-    setError(null);
+## 9. Database Seed Script — `app/seed.py`
 
-    try {
-      const data = await agentApi.run(prompt, provider);
-      setResult(data.result);
-      setScreenshotUrl(data.screenshot_url);
-      setStatus("done");
-    } catch (err: any) {
-      setError(err?.response?.data?.detail ?? "Agent failed. Check the backend logs.");
-      setStatus("error");
-    }
-  };
+Before testing the full UI, populate the database with real compliance controls:
 
-  return (
-    <div className="page">
-      <h1>AI Agent Runner</h1>
-      <p className="subtitle">
-        Describe what evidence to collect and the agent will navigate the portal automatically.
-      </p>
-
-      <form className="form" onSubmit={handleRun}>
-        <div className="form-group">
-          <label>LLM Provider</label>
-          <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="gemini">Google Gemini (free tier)</option>
-            <option value="anthropic">Anthropic Claude (paid)</option>
-            <option value="ollama">Ollama (local — no API key)</option>
-          </select>
-        </div>
-
-        <div className="form-group">
-          <label>Prompt</label>
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={4}
-            placeholder='e.g. "Go to google.com and take a screenshot of the homepage"'
-            required
-          />
-        </div>
-
-        <button
-          type="submit"
-          className="btn btn-primary"
-          disabled={status === "running"}
-        >
-          {status === "running" ? "Agent running..." : "Run Agent"}
-        </button>
-      </form>
-
-      {status === "running" && (
-        <div className="agent-log" style={{ marginTop: "1.5rem" }}>
-          <p>Agent is working... this may take 30–120 seconds.</p>
-        </div>
-      )}
-
-      {status === "error" && (
-        <div className="alert" style={{ background: "#fee2e2", color: "#991b1b", marginTop: "1rem" }}>
-          {error}
-        </div>
-      )}
-
-      {status === "done" && result && (
-        <div style={{ marginTop: "1.5rem" }}>
-          <h2>Agent Result</h2>
-          <div className="agent-log">
-            <div className="log-box">
-              <div className="log-line">{result}</div>
-            </div>
-          </div>
-
-          {screenshotUrl && (
-            <div style={{ marginTop: "1rem" }}>
-              <h2>Screenshot</h2>
-              <img
-                src={`http://localhost:8000${screenshotUrl}`}
-                alt="Agent screenshot"
-                style={{ maxWidth: "100%", borderRadius: "8px", marginTop: "0.5rem" }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+```bash
+cd backend
+source venv/bin/activate
+python -m app.seed
 ```
+
+This inserts:
+- **SOC2** — 12 controls (CC6.1, CC6.2, CC7.1, CC8.1, ...)
+- **PCI-DSS** — 14 controls (Req 1.1, Req 8.2, Req 10.1, ...)
+- **HIPAA** — 12 controls (§164.308(a)(1), §164.312(a)(1), ...)
+
+The seed script checks `if db.query(Framework).count() > 0` before inserting,
+so it is safe to run multiple times.
 
 ---
 
 ## 10. Test the Agent
 
-Start the backend with the agent registered:
+### Via Swagger
 
-```bash
-cd backend
-source venv/bin/activate
-uvicorn app.main:app --reload --port 8000
 ```
-
-**Simple test via Swagger:**
-
-1. Go to `http://localhost:8000/docs`
-2. Open `POST /api/agent/run`
-3. Body:
-```json
+POST http://localhost:8000/api/agent/run
 {
-  "prompt": "Go to https://google.com and take a screenshot of the search page",
-  "provider": "gemini"
-}
-```
-4. Execute — wait 30–120 seconds
-
-Expected response:
-```json
-{
-  "status": "completed",
-  "result": "Successfully navigated to google.com and captured a screenshot of the search page.",
-  "screenshot_url": "/uploads/3f4a1b2c.png"
+  "prompt": "Go to https://aws.amazon.com/compliance/services-in-scope/ and take a screenshot"
 }
 ```
 
-**From the UI:**
+### Via the UI
 
-Go to `http://localhost:5173/agent`, enter the same prompt, click Run Agent.
+Go to `http://localhost:5173/agent`, type a prompt, click **Run Agent**.
+Wait 30–120 seconds. The result text and screenshot appear when done.
+
+### Recommended test prompts
+
+**Quick (no login needed):**
+```
+Go to https://portal.azure.com and take a screenshot of the login page
+```
+
+**Compliance-relevant public page:**
+```
+Go to https://aws.amazon.com/compliance/services-in-scope/, scroll to find
+SOC 2 in the table, and take a screenshot showing the services in scope
+```
+
+**Full portal (requires logged-in Chrome session):**
+```
+Go to https://portal.azure.com, navigate to Microsoft Entra ID,
+open the Users section, take a screenshot of the users list
+```
 
 ---
 
 ## 11. LLM Provider Comparison
 
-| Provider | Model | Setup | Cost | Quality |
-|---|---|---|---|---|
-| Ollama | qwen2.5:7b | `ollama pull qwen2.5:7b` | Free | Medium |
-| Ollama | llama3.1:8b | `ollama pull llama3.1:8b` | Free | Medium |
-| Google Gemini | gemini-2.0-flash | API key | Free tier | High |
-| Anthropic | claude-sonnet-4-6 | API key | Paid | Very High |
+| Provider | Model | Cost | Reliability |
+|---|---|---|---|
+| Ollama — qwen2.5:7b | local | Free | Medium — tends to loop or mis-navigate |
+| Google Gemini | gemini-2.0-flash | Free tier | High |
+| Anthropic Claude | claude-haiku-4-5-20251001 | Paid | Very High |
 
-**Recommendation for getting started:** Use Gemini 2.0 Flash. It has a free tier, is fast,
-and handles browser navigation tasks reliably. Get a free API key at `aistudio.google.com`.
+**For getting started:** Use Gemini 2.0 Flash. Free API key at `aistudio.google.com`.
+Set `AGENT_PROVIDER=gemini` and `GEMINI_API_KEY=your_key` in `backend/.env`.
 
-**Ollama setup (for fully local, no internet required):**
-```bash
-# Download Ollama from ollama.com, then:
-ollama pull qwen2.5:7b
-
-# Verify it works:
-ollama run qwen2.5:7b "Hello, what model are you?"
-```
+**Ollama** works but smaller models (7B) often lose track of the task on complex pages.
+Use it for simple single-page prompts.
 
 ---
 
-## 12. Known Issues and How to Handle Them
+## 12. Known Limitations
 
-### Issue: Agent takes too long / times out
+### Screenshot returns `null`
+If the browser session closes before the screenshot is captured,
+`browser.get_current_page()` fails silently and `screenshot_url` is `null`.
+This can happen on complex pages that trigger browser restarts. The `result` text
+is still returned — only the screenshot is missing.
 
-The agent may take 2–5 minutes for complex tasks. The FastAPI HTTP request will stay open
-until the agent finishes. If you need non-blocking execution, implement a background task:
+### Azure portal login errors (Code 50058)
+Azure Portal redirects unauthenticated sessions to a Microsoft login page.
+The agent can navigate there but cannot log in without credentials.
+**Fix:** Log into Azure in your system Chrome before running the agent.
+The agent will reuse your active session.
 
-```python
-from fastapi import BackgroundTasks
+### MFA-gated portals
+The agent cannot complete MFA prompts automatically. Pre-authenticate in Chrome
+before running prompts against protected portals.
 
-@router.post("/run")
-async def run_agent_endpoint(payload: AgentRequest, background_tasks: BackgroundTasks):
-    task_id = str(uuid4())
-    background_tasks.add_task(run_agent_background, task_id, payload.prompt, payload.provider)
-    return {"task_id": task_id, "status": "started"}
-```
-
-This is a future enhancement (see `full-details.md` Roadmap section).
-
-### Issue: Small LLMs hallucinate
-
-`llama3.2` (3B parameters) often invents page elements that don't exist and gets stuck in loops.
-Minimum recommended: `qwen2.5:7b` for local models, or Gemini/Claude for cloud models.
-
-### Issue: Login pages and MFA
-
-The agent cannot log in to services that require MFA (multi-factor authentication) without
-additional credential injection setup. This is a limitation of the current implementation.
-
-For portals you control, you can pass credentials via the prompt:
-```
-"Go to https://portal.example.com, log in with username admin@example.com and password [PASSWORD],
-navigate to the settings page, and take a screenshot."
-```
-
-For MFA, you need to set up a browser session with cookies already authenticated, or configure
-browser-use's credential manager (future feature).
-
-### Issue: Page readiness timeouts
-
-```
-WARNING: Page readiness timeout waiting for network to settle
-```
-
-This is normal for slow-loading Azure/AWS portals. The agent automatically retries.
-You can increase the timeout in the BrowserProfile if needed.
+### Timeout on slow portals
+Azure / AWS portals load slowly. If the agent times out, increase `max_steps` in
+`runner.py` or break the task into smaller prompts.
 
 ---
 
-## 13. The Full Application Is Now Complete
+## 13. Future Roadmap
 
-After completing Stage 08, every feature described in `full-details.md` is implemented:
-
-| Feature | Status |
+| Feature | Priority |
 |---|---|
-| Upload evidence files | ✅ |
-| Map evidence to controls | ✅ |
-| View submission history | ✅ |
-| Browse evidence by framework | ✅ |
-| AI agent — natural language prompts | ✅ |
-| AI agent — browser automation | ✅ |
-| AI agent — screenshot capture | ✅ |
-| Swagger API documentation | ✅ |
-
-### Access Points
-
-| URL | What You See |
-|---|---|
-| `http://localhost:5173` | React frontend |
-| `http://localhost:8000/docs` | Swagger API documentation |
-| `http://localhost:8000/health` | Backend health check |
-| `http://localhost:8000/uploads/<file>` | Stored evidence files |
-
----
-
-## 14. Future Roadmap
-
-See `full-details.md` Section 19 for the full list. Top priorities:
-
-1. **Azure Blob Storage** — replace `local_storage.py` with Azure Blob
-2. **User authentication** — JWT login tied to WSO2 SSO
-3. **Background task queue** — agent runs don't block the API
-4. **WebSocket streaming** — real-time agent logs visible in the UI
+| Azure Blob Storage swap-in (replace `local_storage.py`) | High |
+| User authentication — JWT login tied to WSO2 SSO | High |
+| Background task queue — agent runs don't block HTTP | Medium |
+| WebSocket streaming — real-time agent logs in the UI | Medium |
+| Credential injection for portal login | Low |

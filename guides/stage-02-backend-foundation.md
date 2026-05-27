@@ -138,19 +138,26 @@ nano .env
 
 Paste:
 ```
-DATABASE_URL=sqlite:///./compliance.db
+DATABASE_URL=postgresql://complianceuser:compliancepass@localhost:5432/compliance_db
+GEMINI_API_KEY=your_gemini_key_here
+ANTHROPIC_API_KEY=your_anthropic_key_here
+AGENT_PROVIDER=ollama
+AGENT_MODEL=qwen2.5:7b
 ```
 
-**What `sqlite:///./compliance.db` means:**
-- `sqlite://` — use the SQLite database driver
-- `/.` — path starts from the current working directory
-- `/compliance.db` — the filename
+**What `postgresql://...` means:**
+- `postgresql://` — use the PostgreSQL driver (psycopg2)
+- `complianceuser:compliancepass` — database username and password
+- `localhost:5432` — host and port (default PostgreSQL port)
+- `compliance_db` — the database name
 
-When you run `uvicorn` from inside `backend/`, this creates `backend/compliance.db`.
+Start the database with Docker before running the backend:
+```bash
+docker-compose up -d
+```
 
-**Why use SQLite for development?**
-SQLite is a single file — no server to start, no Docker required, zero config.
-For production you switch to PostgreSQL by changing this one line.
+**`AGENT_PROVIDER`** controls which LLM the AI agent uses: `"ollama"`, `"gemini"`, or `"anthropic"`.
+**`AGENT_MODEL`** sets the model name within that provider.
 
 ---
 
@@ -162,6 +169,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     DATABASE_URL: str
+    GEMINI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    AGENT_PROVIDER: str = "ollama"  # "ollama" | "anthropic" | "gemini"
+    AGENT_MODEL: str = "qwen2.5:7b"
 
     class Config:
         env_file = ".env"
@@ -181,10 +192,16 @@ Import the base class that enables reading config from environment variables.
 class Settings(BaseSettings):
     DATABASE_URL: str
 ```
-Define a config class. `DATABASE_URL: str` means:
-- When `Settings()` is instantiated, look for an environment variable named `DATABASE_URL`
-- If found, assign it as a string
-- If not found and no default is given, raise a `ValidationError`
+`DATABASE_URL: str` has no default — if missing from `.env`, the app raises a `ValidationError` on startup.
+
+```python
+    GEMINI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    AGENT_PROVIDER: str = "ollama"
+    AGENT_MODEL: str = "qwen2.5:7b"
+```
+These have defaults so the app starts even if you haven't set up a cloud LLM yet.
+`AGENT_PROVIDER` and `AGENT_MODEL` tell `runner.py` which LLM to initialise.
 
 ```python
     class Config:
@@ -199,7 +216,8 @@ settings = Settings()
 Create a single global instance. Any file that needs config imports this one object:
 ```python
 from app.config import settings
-print(settings.DATABASE_URL)  # "sqlite:///./compliance.db"
+print(settings.DATABASE_URL)       # "postgresql://..."
+print(settings.AGENT_PROVIDER)    # "ollama"
 ```
 
 ---
@@ -286,7 +304,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from app.api.routes import frameworks, controls, evidence, submissions
+from app.api.routes import frameworks, controls, evidence, submissions, agent
 
 app = FastAPI(title="Compliance Evidence Portal", version="1.0.0")
 
@@ -305,6 +323,7 @@ app.include_router(frameworks.router, prefix="/api")
 app.include_router(controls.router, prefix="/api")
 app.include_router(evidence.router, prefix="/api")
 app.include_router(submissions.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 
 
 @app.get("/health")
@@ -400,11 +419,12 @@ Useful for deployment health checks and verifying the server is running.
 At this point, comment out the router imports in `main.py` (they don't exist yet):
 
 ```python
-# from app.api.routes import frameworks, controls, evidence, submissions
+# from app.api.routes import frameworks, controls, evidence, submissions, agent
 # app.include_router(frameworks.router, prefix="/api")
 # app.include_router(controls.router, prefix="/api")
 # app.include_router(evidence.router, prefix="/api")
 # app.include_router(submissions.router, prefix="/api")
+# app.include_router(agent.router, prefix="/api")
 ```
 
 Then run:

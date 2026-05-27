@@ -99,8 +99,8 @@ This hierarchy is exactly reflected in the database tables.
          ┌─────────────┴───────────────┐
          │                             │
 ┌────────▼──────────┐    ┌─────────────▼──────────┐
-│  SQLite (dev)     │    │  Local filesystem       │
-│  PostgreSQL (prod)│    │  backend/uploads/       │
+│  PostgreSQL        │    │  Local filesystem       │
+│  (Docker)          │    │  backend/uploads/       │
 │                   │    │  (Azure Blob ready)     │
 │  4 tables:        │    │                         │
 │  frameworks       │    │  Stores:                │
@@ -232,7 +232,6 @@ Compliance-Evidence-Submission-Portal/
 │   ├── .env                   ← DATABASE_URL and secrets (NOT in git)
 │   ├── alembic.ini            ← Alembic tool configuration
 │   ├── requirements.txt       ← Python package list
-│   ├── compliance.db          ← SQLite database file (created on first run)
 │   ├── uploads/               ← Evidence files saved here
 │   │
 │   ├── alembic/               ← Database migration system
@@ -244,11 +243,14 @@ Compliance-Evidence-Submission-Portal/
 │       ├── main.py            ← FastAPI app instance, middleware, routers
 │       ├── config.py          ← Reads .env via pydantic-settings
 │       ├── database.py        ← SQLAlchemy engine and session factory
+│       ├── seed.py            ← Populates SOC2, PCI-DSS, HIPAA frameworks & controls
 │       ├── models/            ← Database table definitions (SQLAlchemy)
 │       ├── schemas/           ← API request/response shapes (Pydantic)
-│       ├── api/routes/        ← HTTP endpoint handlers
-│       ├── agent/             ← AI browser agent (Phase 6)
+│       ├── api/routes/        ← HTTP endpoint handlers (incl. agent.py)
+│       ├── agent/             ← AI browser agent (runner.py)
 │       └── storage/           ← File save/delete utilities
+│
+├── docker-compose.yml         ← PostgreSQL database
 │
 └── frontend/                  ← React TypeScript app
     ├── package.json           ← Node dependencies
@@ -274,13 +276,13 @@ Compliance-Evidence-Submission-Portal/
 
 **Stage order:**
 
-| File | What It Covers |
-|---|---|
-| `stage-01-project-overview.md` | This file — understand the project |
-| `stage-02-backend-foundation.md` | FastAPI app, config, database, health |
-| `stage-03-database-models.md` | SQLAlchemy models (4 tables) |
-| `stage-04-alembic-migrations.md` | Alembic setup and running migrations |
-| `stage-05-api-routes.md` | Pydantic schemas + FastAPI routes |
-| `stage-06-file-storage.md` | Multipart upload, file save/serve |
-| `stage-07-react-frontend.md` | Full React frontend |
-| `stage-08-ai-agent.md` | AI agent layer (Phase 6 — to be built) |
+| File | What It Covers | Status |
+|---|---|---|
+| `stage-01-project-overview.md` | This file — understand the project | ✅ Done |
+| `stage-02-backend-foundation.md` | FastAPI app, config, database, health | ✅ Done |
+| `stage-03-database-models.md` | SQLAlchemy models (4 tables) | ✅ Done |
+| `stage-04-alembic-migrations.md` | Alembic setup and running migrations | ✅ Done |
+| `stage-05-api-routes.md` | Pydantic schemas + FastAPI routes | ✅ Done |
+| `stage-06-file-storage.md` | Multipart upload, file save/serve | ✅ Done |
+| `stage-07-react-frontend.md` | Full React frontend (5 pages) | ✅ Done |
+| `stage-08-ai-agent.md` | AI agent layer with browser-use | ✅ Done |

@@ -1,3 +1,4 @@
+import base64
 import uuid
 from pathlib import Path
 
@@ -27,7 +28,10 @@ def _build_llm():
         )
     else:
         from browser_use import ChatOllama
-        return ChatOllama(model=model or "qwen2.5:7b")
+        return ChatOllama(
+            model=model or "qwen2.5:7b",
+            timeout=180,  # 3 min — local models are slow
+        )
 
 
 async def run_agent(prompt: str) -> dict:
@@ -36,21 +40,20 @@ async def run_agent(prompt: str) -> dict:
     profile = BrowserProfile(channel="chrome", headless=False)
     browser = BrowserSession(browser_profile=profile)
 
-    agent = Agent(task=prompt, llm=llm, browser=browser)
+    agent = Agent(task=prompt, llm=llm, browser=browser, use_vision=True)
     history = await agent.run(max_steps=15)
 
     final_result = history.final_result() or "Task completed"
 
     screenshot_url = None
-    try:
-        page = await browser.get_current_page()
-        screenshot_bytes = await page.screenshot()
+    screenshots = history.screenshots()
+    if screenshots:
+        raw = screenshots[-1]
+        if raw.startswith("data:image"):
+            raw = raw.split(",", 1)[1]
         screenshot_name = f"{uuid.uuid4()}.png"
-        screenshot_path = UPLOAD_DIR / screenshot_name
-        screenshot_path.write_bytes(screenshot_bytes)
+        (UPLOAD_DIR / screenshot_name).write_bytes(base64.b64decode(raw))
         screenshot_url = f"/uploads/{screenshot_name}"
-    except Exception:
-        pass
 
     return {
         "status": "completed",
