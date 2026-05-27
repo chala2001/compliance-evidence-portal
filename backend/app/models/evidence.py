@@ -17,4 +17,8 @@ class Evidence(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
     control: Mapped["Control"] = relationship("Control", back_populates="evidence")
-    submissions: Mapped[list["Submission"]] = relationship("Submission", back_populates="evidence")
+    submissions: Mapped[list["Submission"]] = relationship(
+        "Submission",
+        back_populates="evidence",
+        cascade="all, delete-orphan",
+    )

@@ -11,6 +11,7 @@ import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
 import Button from "@mui/material/Button";
 import Alert from "@mui/material/Alert";
+import { PlusIcon, CircleCheckFilledIcon } from "@oxygen-ui/react-icons";
 import { frameworksApi, controlsApi, evidenceApi } from "../api/client";
 
 export default function SubmitEvidence() {
@@ -56,21 +57,27 @@ export default function SubmitEvidence() {
   };
 
   return (
-    <Box>
-      <Typography variant="h4" fontWeight={700} gutterBottom>
-        Submit Evidence
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Upload a file and link it to a compliance control.
-      </Typography>
+    <Box sx={{ maxWidth: 640, mx: "auto" }}>
+      <Box sx={{ textAlign: "center", mb: 4 }}>
+        <Typography variant="h4" gutterBottom>
+          Submit Evidence
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Upload a file and link it to a compliance control.
+        </Typography>
+      </Box>
 
       {success && (
-        <Alert severity="success" sx={{ mb: 3 }}>
+        <Alert
+          severity="success"
+          icon={<CircleCheckFilledIcon size={18} />}
+          sx={{ mb: 3 }}
+        >
           Evidence submitted successfully.
         </Alert>
       )}
 
-      <Paper variant="outlined" sx={{ p: 3, maxWidth: 560 }}>
+      <Paper variant="outlined" sx={{ p: { xs: 3, sm: 4 } }}>
         <Box component="form" onSubmit={handleSubmit}>
           <Stack spacing={2.5}>
             <FormControl fullWidth required>
@@ -119,15 +126,32 @@ export default function SubmitEvidence() {
             />
 
             <Box>
-              <Typography variant="caption" color="text.secondary" display="block" mb={0.5}>
-                File *
+              <Typography variant="caption" color="text.secondary" display="block" mb={0.75} fontWeight={600}>
+                FILE *
               </Typography>
-              <input
-                type="file"
-                required
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                style={{ width: "100%" }}
-              />
+              <Button
+                component="label"
+                variant="outlined"
+                fullWidth
+                startIcon={<PlusIcon size={18} />}
+                sx={{
+                  py: 1.75,
+                  borderStyle: "dashed",
+                  borderColor: "divider",
+                  color: file ? "text.primary" : "text.secondary",
+                  justifyContent: "flex-start",
+                  px: 2,
+                  "&:hover": { borderStyle: "dashed", borderColor: "primary.main", backgroundColor: "rgba(255,115,0,0.04)" },
+                }}
+              >
+                {file ? file.name : "Click to select a file"}
+                <input
+                  type="file"
+                  hidden
+                  required
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                />
+              </Button>
             </Box>
 
             <Button
@@ -135,6 +159,7 @@ export default function SubmitEvidence() {
               variant="contained"
               disabled={mutation.isPending}
               size="large"
+              sx={{ mt: 1, py: 1.25 }}
             >
               {mutation.isPending ? "Uploading..." : "Submit Evidence"}
             </Button>

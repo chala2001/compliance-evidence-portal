@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.evidence import Evidence
+from app.models.submission import Submission
 from app.schemas.evidence import EvidenceResponse
 from app.storage.local_storage import save_file, delete_file
 
@@ -18,6 +19,7 @@ def create_evidence(
     title: str = Form(...),
     control_id: int = Form(...),
     description: str | None = Form(default=None),
+    submitted_by: str = Form(default="manual-user"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
@@ -32,6 +34,16 @@ def create_evidence(
     db.add(evidence)
     db.commit()
     db.refresh(evidence)
+
+    submission = Submission(
+        evidence_id=evidence.id,
+        submitted_by=submitted_by,
+        status="pending",
+        notes=f"Manual upload via Submit page. {description or ''}".strip(),
+    )
+    db.add(submission)
+    db.commit()
+
     return evidence
 
 
