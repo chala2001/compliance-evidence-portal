@@ -13,6 +13,8 @@ import Button from "@mui/material/Button";
 import Alert from "@mui/material/Alert";
 import Divider from "@mui/material/Divider";
 import CircularProgress from "@mui/material/CircularProgress";
+import Chip from "@mui/material/Chip";
+import { BoltIcon, ArrowRightIcon, CircleCheckFilledIcon } from "@oxygen-ui/react-icons";
 import { agentApi, frameworksApi, controlsApi } from "../api/client";
 import "../index.css";
 
@@ -73,21 +75,41 @@ export default function AgentRunner() {
   };
 
   return (
-    <Box>
-      <Typography variant="h4" fontWeight={700} gutterBottom>
-        AI Agent Runner
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Describe what to navigate and capture. The agent will control a real browser automatically.
-        Optionally link the screenshot to a compliance control to auto-create an evidence record.
-      </Typography>
+    <Box sx={{ maxWidth: 760, mx: "auto" }}>
+      <Box sx={{ textAlign: "center", mb: 4 }}>
+        <Box
+          sx={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 56,
+            height: 56,
+            borderRadius: "50%",
+            backgroundColor: "rgba(255,115,0,0.10)",
+            color: "primary.main",
+            mb: 1.5,
+          }}
+        >
+          <BoltIcon size={28} />
+        </Box>
+        <Typography variant="h4" gutterBottom>
+          AI Agent Runner
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 560, mx: "auto" }}>
+          Describe what to navigate and capture. The agent will control a real browser automatically.
+          Optionally link the screenshot to a compliance control to auto-create an evidence record.
+        </Typography>
+      </Box>
 
-      <Paper variant="outlined" sx={{ p: 3, maxWidth: 700 }}>
+      <Paper variant="outlined" sx={{ p: { xs: 3, sm: 4 } }}>
         <Box component="form" onSubmit={handleRun}>
           <Stack spacing={2.5}>
-            <Typography variant="subtitle2" color="text.secondary">
-              Link to compliance control (optional)
-            </Typography>
+            <Stack direction="row" alignItems="center" spacing={1.25}>
+              <Typography variant="subtitle2" color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.72rem" }}>
+                Link to compliance control
+              </Typography>
+              <Chip label="Optional" size="small" variant="outlined" sx={{ height: 20, fontSize: "0.7rem" }} />
+            </Stack>
 
             <FormControl fullWidth>
               <InputLabel>Framework</InputLabel>
@@ -136,7 +158,11 @@ export default function AgentRunner() {
               />
             )}
 
-            <Divider />
+            <Divider sx={{ my: 1 }} />
+
+            <Typography variant="subtitle2" color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.72rem" }}>
+              Task
+            </Typography>
 
             <TextField
               label="Prompt"
@@ -153,7 +179,8 @@ export default function AgentRunner() {
               variant="contained"
               size="large"
               disabled={status === "running"}
-              startIcon={status === "running" ? <CircularProgress size={16} color="inherit" /> : undefined}
+              startIcon={status === "running" ? <CircularProgress size={16} color="inherit" /> : <ArrowRightIcon size={18} />}
+              sx={{ py: 1.25 }}
             >
               {status === "running" ? "Agent running..." : "Run Agent"}
             </Button>
@@ -162,7 +189,7 @@ export default function AgentRunner() {
       </Paper>
 
       {status === "running" && (
-        <Paper variant="outlined" sx={{ mt: 3, maxWidth: 700 }}>
+        <Paper variant="outlined" sx={{ mt: 3, overflow: "hidden" }}>
           <Box className="log-box">
             <div className="log-line">Agent is navigating the browser. This may take 30–120 seconds...</div>
           </Box>
@@ -170,23 +197,27 @@ export default function AgentRunner() {
       )}
 
       {status === "error" && (
-        <Alert severity="error" sx={{ mt: 3, maxWidth: 700 }}>
+        <Alert severity="error" sx={{ mt: 3 }}>
           {error}
         </Alert>
       )}
 
       {status === "done" && (
-        <Box sx={{ mt: 3, maxWidth: 700 }}>
+        <Box sx={{ mt: 3 }}>
           {evidenceId && submissionId && (
-            <Alert severity="success" sx={{ mb: 3 }}>
-              ✓ Saved as <strong>Evidence #{evidenceId}</strong> and <strong>Submission #{submissionId}</strong> (status: pending). Check the Evidence and History pages.
+            <Alert
+              severity="success"
+              icon={<CircleCheckFilledIcon size={18} />}
+              sx={{ mb: 3 }}
+            >
+              Saved as <strong>Evidence #{evidenceId}</strong> and <strong>Submission #{submissionId}</strong> (status: pending). Check the Evidence and History pages.
             </Alert>
           )}
 
           <Typography variant="h6" fontWeight={600} gutterBottom>
             Result
           </Typography>
-          <Paper variant="outlined">
+          <Paper variant="outlined" sx={{ overflow: "hidden" }}>
             <Box className="log-box">
               <div className="log-line">{result}</div>
             </Box>
@@ -197,12 +228,14 @@ export default function AgentRunner() {
               <Typography variant="h6" fontWeight={600} gutterBottom>
                 Screenshot
               </Typography>
-              <Box
-                component="img"
-                src={`http://localhost:8000${screenshotUrl}`}
-                alt="Agent screenshot"
-                sx={{ width: "100%", borderRadius: 1, border: "1px solid", borderColor: "divider" }}
-              />
+              <Paper variant="outlined" sx={{ overflow: "hidden", p: 1 }}>
+                <Box
+                  component="img"
+                  src={`http://localhost:8000${screenshotUrl}`}
+                  alt="Agent screenshot"
+                  sx={{ width: "100%", display: "block", borderRadius: 1 }}
+                />
+              </Paper>
             </Box>
           )}
         </Box>
