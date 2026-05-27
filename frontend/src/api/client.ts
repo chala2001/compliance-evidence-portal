@@ -32,6 +32,6 @@ export const submissionsApi = {
 };
 
 export const agentApi = {
-  run: (prompt: string) =>
-    api.post("/agent/run", { prompt }).then((r) => r.data),
+  run: (data: { prompt: string; control_id?: number; title?: string }) =>
+    api.post("/agent/run", data).then((r) => r.data),
 };
