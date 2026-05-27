@@ -26,6 +26,15 @@ def _build_llm():
             model=model or "gemini-2.0-flash",
             google_api_key=settings.GEMINI_API_KEY,
         )
+    elif provider == "azure":
+        from browser_use import ChatAzureOpenAI
+        return ChatAzureOpenAI(
+            model=model or "gpt-4o-mini",
+            api_key=settings.AZURE_OPENAI_API_KEY,
+            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+            azure_deployment=settings.AZURE_OPENAI_DEPLOYMENT,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
+        )
     else:
         from browser_use import ChatOllama
         return ChatOllama(
@@ -46,6 +55,7 @@ async def run_agent(prompt: str) -> dict:
     final_result = history.final_result() or "Task completed"
 
     screenshot_url = None
+    screenshot_name = None
     screenshots = history.screenshots()
     if screenshots:
         raw = screenshots[-1]
@@ -59,4 +69,5 @@ async def run_agent(prompt: str) -> dict:
         "status": "completed",
         "result": str(final_result),
         "screenshot_url": screenshot_url,
+        "file_name": screenshot_name,
     }

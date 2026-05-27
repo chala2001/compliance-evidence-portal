@@ -1,21 +1,43 @@
 import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import Select from "@mui/material/Select";
+import MenuItem from "@mui/material/MenuItem";
 import Button from "@mui/material/Button";
 import Alert from "@mui/material/Alert";
+import Divider from "@mui/material/Divider";
 import CircularProgress from "@mui/material/CircularProgress";
-import { agentApi } from "../api/client";
+import { agentApi, frameworksApi, controlsApi } from "../api/client";
 import "../index.css";
 
 export default function AgentRunner() {
+  const queryClient = useQueryClient();
+  const [frameworkId, setFrameworkId] = useState<number | "">("");
+  const [controlId, setControlId] = useState<number | "">("");
+  const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
   const [result, setResult] = useState<string | null>(null);
   const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null);
+  const [evidenceId, setEvidenceId] = useState<number | null>(null);
+  const [submissionId, setSubmissionId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const { data: frameworks = [] } = useQuery({
+    queryKey: ["frameworks"],
+    queryFn: frameworksApi.list,
+  });
+  const { data: controls = [] } = useQuery({
+    queryKey: ["controls", frameworkId || undefined],
+    queryFn: () => controlsApi.list(frameworkId || undefined),
+    enabled: !!frameworkId,
+  });
 
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,13 +46,26 @@ export default function AgentRunner() {
     setStatus("running");
     setResult(null);
     setScreenshotUrl(null);
+    setEvidenceId(null);
+    setSubmissionId(null);
     setError(null);
 
     try {
-      const data = await agentApi.run(prompt);
+      const data = await agentApi.run({
+        prompt,
+        control_id: controlId ? Number(controlId) : undefined,
+        title: title || undefined,
+      });
       setResult(data.result);
       setScreenshotUrl(data.screenshot_url);
+      setEvidenceId(data.evidence_id);
+      setSubmissionId(data.submission_id);
       setStatus("done");
+
+      if (data.evidence_id) {
+        queryClient.invalidateQueries({ queryKey: ["evidence"] });
+        queryClient.invalidateQueries({ queryKey: ["submissions"] });
+      }
     } catch (err: any) {
       setError(err.response?.data?.detail || "Agent failed. Check backend logs.");
       setStatus("error");
@@ -44,11 +79,65 @@ export default function AgentRunner() {
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
         Describe what to navigate and capture. The agent will control a real browser automatically.
+        Optionally link the screenshot to a compliance control to auto-create an evidence record.
       </Typography>
 
       <Paper variant="outlined" sx={{ p: 3, maxWidth: 700 }}>
         <Box component="form" onSubmit={handleRun}>
           <Stack spacing={2.5}>
+            <Typography variant="subtitle2" color="text.secondary">
+              Link to compliance control (optional)
+            </Typography>
+
+            <FormControl fullWidth>
+              <InputLabel>Framework</InputLabel>
+              <Select
+                label="Framework"
+                value={frameworkId}
+                onChange={(e) => {
+                  setFrameworkId(e.target.value as number | "");
+                  setControlId("");
+                }}
+              >
+                <MenuItem value="">
+                  <em>— Just run, don't save as evidence —</em>
+                </MenuItem>
+                {frameworks.map((f: any) => (
+                  <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {frameworkId !== "" && (
+              <FormControl fullWidth>
+                <InputLabel>Control</InputLabel>
+                <Select
+                  label="Control"
+                  value={controlId}
+                  onChange={(e) => setControlId(e.target.value as number | "")}
+                >
+                  <MenuItem value="">
+                    <em>— Select a control —</em>
+                  </MenuItem>
+                  {controls.map((c: any) => (
+                    <MenuItem key={c.id} value={c.id}>{c.control_ref} — {c.title}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+
+            {controlId !== "" && (
+              <TextField
+                label="Evidence Title (optional)"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Defaults to start of prompt"
+                fullWidth
+              />
+            )}
+
+            <Divider />
+
             <TextField
               label="Prompt"
               value={prompt}
@@ -88,6 +177,12 @@ export default function AgentRunner() {
 
       {status === "done" && (
         <Box sx={{ mt: 3, maxWidth: 700 }}>
+          {evidenceId && submissionId && (
+            <Alert severity="success" sx={{ mb: 3 }}>
+              ✓ Saved as <strong>Evidence #{evidenceId}</strong> and <strong>Submission #{submissionId}</strong> (status: pending). Check the Evidence and History pages.
+            </Alert>
+          )}
+
           <Typography variant="h6" fontWeight={600} gutterBottom>
             Result
           </Typography>
