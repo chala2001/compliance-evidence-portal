@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import re
 import uuid
 from pathlib import Path
 
@@ -6,8 +8,79 @@ from browser_use import Agent, BrowserProfile, BrowserSession
 
 from app.config import settings
 
+_SUBTASK_PATTERN = re.compile(r"^\s*(?:\d+[.)\-:]?|[-*•►▶→])\s+(.+)$")
+
+
+def parse_subtasks(prompt: str) -> list[str]:
+    lines = prompt.strip().splitlines()
+    subtasks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        m = _SUBTASK_PATTERN.match(line)
+        if m:
+            if current:
+                subtasks.append(current)
+            current = [m.group(1).strip()]
+        elif current and line.strip():
+            current.append(line.strip())
+    if current:
+        subtasks.append(current)
+    joined = ["\n".join(s).strip() for s in subtasks]
+    joined = [s for s in joined if s]
+    return joined if joined else [prompt.strip()]
+
+
+_pause_event = asyncio.Event()
+_pause_event.set()
+
+
+def pause_runner() -> None:
+    _pause_event.clear()
+
+
+def resume_runner() -> None:
+    _pause_event.set()
+
+
+def is_paused() -> bool:
+    return not _pause_event.is_set()
+
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+BROWSER_PROFILE_DIR = Path(__file__).parent.parent.parent / "browser_profile"
+BROWSER_PROFILE_DIR.mkdir(exist_ok=True)
+
+_shared_browser: BrowserSession | None = None
+
+
+def _get_browser() -> BrowserSession:
+    global _shared_browser
+    if _shared_browser is None:
+        profile = BrowserProfile(
+            channel="chrome",
+            headless=False,
+            user_data_dir=str(BROWSER_PROFILE_DIR),
+            keep_alive=True,
+        )
+        _shared_browser = BrowserSession(browser_profile=profile)
+    return _shared_browser
+
+
+async def open_browser_at(url: str) -> dict:
+    browser = _get_browser()
+    await browser.start()
+    await browser.navigate_to(url)
+    return {"status": "opened", "url": url}
+
+
+async def get_browser_status() -> dict:
+    browser = _get_browser()
+    try:
+        current_url = await browser.get_current_page_url()
+        return {"is_open": True, "current_url": current_url}
+    except Exception:
+        return {"is_open": False, "current_url": None}
 
 
 def _build_llm():
@@ -43,31 +116,116 @@ def _build_llm():
         )
 
 
-async def run_agent(prompt: str) -> dict:
+AGENT_INSTRUCTIONS = """\
+CRITICAL AUTHENTICATION RULES — READ FIRST:
+- You are already logged in. A human user has already authenticated this browser session.
+- DO NOT type any usernames, passwords, MFA codes, or credentials.
+- DO NOT click "Sign in", "Log in", or "Continue" on any login page.
+- DO NOT invent or guess credentials under any circumstance.
+- If you see a login screen, sign-in prompt, or authentication challenge, STOP immediately
+  and report: 'NOT_LOGGED_IN — user must authenticate first'.
+
+SEARCH & NAVIGATION STRATEGY (be smart, not literal):
+- When asked to find a resource by name (S3 bucket, Key Vault, VM, etc.):
+  1. Try the EXACT name the user gave you first.
+  2. If no exact match, try common variations:
+     - swap hyphens / underscores / spaces: "cloud-care", "cloud_care", "cloudcare", "cloud care"
+     - try lowercase, Title Case, UPPERCASE
+     - try with common prefixes/suffixes: "dev-X", "prod-X", "X-bucket", "X-prod"
+  3. If still no match, list all available resources and pick the one whose name
+     is MOST SIMILAR (case-insensitive substring match, fuzzy match on words).
+     Example: asked for "cloud-care", saw "cloudcare-prod-storage" → that's the match.
+  4. If there are multiple candidates, pick the most likely one AND screenshot the full list
+     so the user can verify.
+- For cloud consoles with regions (AWS), if a resource is not found, also try switching
+  regions or check the "global" / "all regions" view.
+- Always prefer capturing SOMETHING relevant over giving up empty-handed.
+
+SCREENSHOT STRATEGY:
+- Wait for the page to FULLY render before screenshotting (wait for loading spinners to clear).
+- Scroll if needed to bring the relevant section into view.
+- Capture CONTEXT — include enough surrounding UI (page title, breadcrumbs, panel headers)
+  so an auditor understands what they're looking at.
+- If you can't find the exact thing asked for, screenshot the CLOSEST related view
+  (e.g. the resource list, the parent service page) so the user has useful evidence.
+
+REPORTING (always in your final answer):
+- WHAT YOU WERE ASKED to find or do.
+- WHAT YOU ACTUALLY FOUND: exact match, close match, or "nothing similar found".
+- ANY VARIATIONS or substitutions you tried (e.g. "tried cloud-care, cloud_care, cloudcare;
+  found 'cloudcare-prod' which appears to be the same resource").
+- ANY BLOCKERS (permission errors, region issues, page didn't load).
+
+TASK TO PERFORM (assume you are already authenticated):
+"""
+
+
+def _save_screenshot(raw: str) -> tuple[str, str]:
+    if raw.startswith("data:image"):
+        raw = raw.split(",", 1)[1]
+    name = f"{uuid.uuid4()}.png"
+    (UPLOAD_DIR / name).write_bytes(base64.b64decode(raw))
+    return name, f"/uploads/{name}"
+
+
+async def run_agent(prompt: str, region_hint: str | None = None) -> dict:
     llm = _build_llm()
+    browser = _get_browser()
+    await browser.start()
 
-    profile = BrowserProfile(channel="chrome", headless=False)
-    browser = BrowserSession(browser_profile=profile)
+    subtasks = parse_subtasks(prompt)
+    context_prefix = ""
+    if region_hint and region_hint.strip():
+        context_prefix = (
+            "ENVIRONMENT CONTEXT (apply to all tasks):\n"
+            f"{region_hint.strip()}\n"
+            "Before searching for any resource, ensure you have switched to the correct "
+            "region/subscription/workspace mentioned above. If you are in a different "
+            "region, switch first (use the region selector usually at the top-right of "
+            "AWS / Azure consoles), then continue with the task.\n\n"
+        )
 
-    agent = Agent(task=prompt, llm=llm, browser=browser, use_vision=True)
-    history = await agent.run(max_steps=15)
+    _pause_event.set()
 
-    final_result = history.final_result() or "Task completed"
+    all_screenshots: list[dict] = []
+    all_results: list[dict] = []
+    paused_between: list[int] = []
 
-    screenshot_url = None
-    screenshot_name = None
-    screenshots = history.screenshots()
-    if screenshots:
-        raw = screenshots[-1]
-        if raw.startswith("data:image"):
-            raw = raw.split(",", 1)[1]
-        screenshot_name = f"{uuid.uuid4()}.png"
-        (UPLOAD_DIR / screenshot_name).write_bytes(base64.b64decode(raw))
-        screenshot_url = f"/uploads/{screenshot_name}"
+    for idx, subtask in enumerate(subtasks):
+        if idx > 0:
+            if is_paused():
+                paused_between.append(idx + 1)
+            await _pause_event.wait()
 
+        full_task = AGENT_INSTRUCTIONS + context_prefix + subtask
+        agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
+        history = await agent.run(max_steps=25)
+
+        result_text = history.final_result() or f"Subtask {idx + 1} completed"
+        all_results.append({"subtask": subtask, "result": str(result_text)})
+
+        screenshots = history.screenshots()
+        if screenshots:
+            name, url = _save_screenshot(screenshots[-1])
+            all_screenshots.append({
+                "subtask": subtask[:120],
+                "subtask_index": idx + 1,
+                "file_name": name,
+                "file_url": url,
+            })
+
+    combined_result = "\n\n".join(
+        f"[Task {i + 1}] {r['result']}" for i, r in enumerate(all_results)
+    )
+
+    last_shot = all_screenshots[-1] if all_screenshots else None
     return {
         "status": "completed",
-        "result": str(final_result),
-        "screenshot_url": screenshot_url,
-        "file_name": screenshot_name,
+        "result": combined_result,
+        "subtask_count": len(subtasks),
+        "subtasks": all_results,
+        "screenshots": all_screenshots,
+        "paused_between_tasks": paused_between,
+        "screenshot_url": last_shot["file_url"] if last_shot else None,
+        "file_name": last_shot["file_name"] if last_shot else None,
     }

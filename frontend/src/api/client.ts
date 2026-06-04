@@ -32,6 +32,12 @@ export const submissionsApi = {
 };
 
 export const agentApi = {
-  run: (data: { prompt: string; control_id?: number; title?: string }) =>
+  run: (data: { prompt: string; control_id?: number; title?: string; region_hint?: string }) =>
     api.post("/agent/run", data).then((r) => r.data),
+  openPortal: (data: { url: string }) =>
+    api.post("/agent/open-portal", data).then((r) => r.data),
+  browserStatus: () => api.get("/agent/browser-status").then((r) => r.data),
+  pause: () => api.post("/agent/pause").then((r) => r.data),
+  resume: () => api.post("/agent/resume").then((r) => r.data),
+  runStatus: () => api.get("/agent/run-status").then((r) => r.data),
 };
