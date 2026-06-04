@@ -1,12 +1,18 @@
 import asyncio
 import base64
 import re
+import time
 import uuid
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from browser_use import Agent, BrowserProfile, BrowserSession
 
 from app.config import settings
+
+DEFAULT_MAX_STEPS = 15
+
+RUNS: dict[str, dict[str, Any]] = {}
 
 _SUBTASK_PATTERN = re.compile(r"^\s*(?:\d+[.)\-:]?|[-*•►▶→])\s+(.+)$")
 
@@ -199,7 +205,7 @@ async def run_agent(prompt: str, region_hint: str | None = None) -> dict:
 
         full_task = AGENT_INSTRUCTIONS + context_prefix + subtask
         agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
-        history = await agent.run(max_steps=25)
+        history = await agent.run(max_steps=DEFAULT_MAX_STEPS)
 
         result_text = history.final_result() or f"Subtask {idx + 1} completed"
         all_results.append({"subtask": subtask, "result": str(result_text)})
@@ -229,3 +235,116 @@ async def run_agent(prompt: str, region_hint: str | None = None) -> dict:
         "screenshot_url": last_shot["file_url"] if last_shot else None,
         "file_name": last_shot["file_name"] if last_shot else None,
     }
+
+
+def _build_context_prefix(region_hint: str | None) -> str:
+    if not region_hint or not region_hint.strip():
+        return ""
+    return (
+        "ENVIRONMENT CONTEXT (apply to all tasks):\n"
+        f"{region_hint.strip()}\n"
+        "Before searching for any resource, ensure you have switched to the correct "
+        "region/subscription/workspace mentioned above. If you are in a different "
+        "region, switch first (use the region selector usually at the top-right of "
+        "AWS / Azure consoles), then continue with the task.\n\n"
+    )
+
+
+async def _execute_run(
+    run_id: str,
+    on_subtask_complete: Callable[[str, dict, str], Awaitable[tuple[int | None, int | None]]] | None = None,
+) -> None:
+    run = RUNS[run_id]
+    try:
+        llm = _build_llm()
+        browser = _get_browser()
+        await browser.start()
+
+        subtasks = parse_subtasks(run["prompt"])
+        run["subtasks"] = [
+            {"index": i, "text": s, "status": "pending", "result": None, "screenshot": None, "evidence_id": None, "submission_id": None}
+            for i, s in enumerate(subtasks)
+        ]
+        run["status"] = "running"
+
+        context_prefix = _build_context_prefix(run.get("region_hint"))
+        _pause_event.set()
+
+        for idx, subtask_obj in enumerate(run["subtasks"]):
+            if idx > 0 and is_paused():
+                run["status"] = "paused"
+                await _pause_event.wait()
+                run["status"] = "running"
+
+            run["current_index"] = idx
+            subtask_obj["status"] = "running"
+            subtask_obj["started_at"] = time.time()
+
+            mod = run.get("modifications", {}).get(idx) or run.get("modifications", {}).get(str(idx))
+            extra = ""
+            if mod:
+                extra = f"\n\nADDITIONAL INSTRUCTIONS FROM USER FOR THIS TASK (apply on top of the task above):\n{mod}\n"
+                subtask_obj["modification"] = mod
+
+            full_task = AGENT_INSTRUCTIONS + context_prefix + subtask_obj["text"] + extra
+            agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
+            history = await agent.run(max_steps=DEFAULT_MAX_STEPS)
+
+            result_text = str(history.final_result() or f"Subtask {idx + 1} completed")
+            subtask_obj["result"] = result_text
+
+            screenshots = history.screenshots()
+            if screenshots:
+                name, url = _save_screenshot(screenshots[-1])
+                shot = {
+                    "subtask": subtask_obj["text"][:120],
+                    "subtask_index": idx + 1,
+                    "file_name": name,
+                    "file_url": url,
+                }
+                subtask_obj["screenshot"] = shot
+                if on_subtask_complete:
+                    try:
+                        evidence_id, submission_id = await on_subtask_complete(run_id, shot, result_text)
+                        subtask_obj["evidence_id"] = evidence_id
+                        subtask_obj["submission_id"] = submission_id
+                    except Exception as ex:
+                        subtask_obj["persist_error"] = str(ex)
+
+            subtask_obj["status"] = "completed"
+            subtask_obj["completed_at"] = time.time()
+
+        run["status"] = "completed"
+        run["completed_at"] = time.time()
+    except Exception as e:
+        run["status"] = "error"
+        run["error"] = str(e)
+        run["completed_at"] = time.time()
+
+
+def start_background_run(
+    prompt: str,
+    region_hint: str | None,
+    control_id: int | None,
+    title: str | None,
+    submitted_by: str,
+    on_subtask_complete: Callable[[str, dict, str], Awaitable[tuple[int | None, int | None]]] | None = None,
+) -> str:
+    run_id = uuid.uuid4().hex[:12]
+    RUNS[run_id] = {
+        "run_id": run_id,
+        "prompt": prompt,
+        "region_hint": region_hint,
+        "control_id": control_id,
+        "title": title,
+        "submitted_by": submitted_by,
+        "subtasks": [],
+        "current_index": -1,
+        "status": "starting",
+        "started_at": time.time(),
+        "completed_at": None,
+        "error": None,
+        "modifications": {},
+    }
+    asyncio.create_task(_execute_run(run_id, on_subtask_complete=on_subtask_complete))
+    return run_id

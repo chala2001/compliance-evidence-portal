@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
@@ -45,6 +45,29 @@ function parseSubtasksClient(prompt: string): string[] {
   return joined.length ? joined : prompt.trim() ? [prompt.trim()] : [];
 }
 
+type SubtaskState = {
+  index: number;
+  text: string;
+  status: "pending" | "running" | "completed";
+  result?: string | null;
+  screenshot?: { file_name: string; file_url: string; subtask: string; subtask_index: number } | null;
+  evidence_id?: number | null;
+  submission_id?: number | null;
+  modification?: string;
+  started_at?: number;
+  completed_at?: number;
+};
+
+type RunState = {
+  run_id: string;
+  status: "starting" | "running" | "paused" | "completed" | "error";
+  current_index: number;
+  subtasks: SubtaskState[];
+  error?: string | null;
+  started_at?: number;
+  completed_at?: number | null;
+};
+
 export default function AgentRunner() {
   const queryClient = useQueryClient();
   const [frameworkId, setFrameworkId] = useState<number | "">("");
@@ -52,10 +75,13 @@ export default function AgentRunner() {
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
-  const [result, setResult] = useState<string | null>(null);
-  const [screenshots, setScreenshots] = useState<Array<{ subtask: string; subtask_index: number; file_url: string; file_name: string }>>([]);
-  const [evidenceIds, setEvidenceIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const [runId, setRunId] = useState<string | null>(null);
+  const [runState, setRunState] = useState<RunState | null>(null);
+  const [nextTaskMod, setNextTaskMod] = useState<string>("");
+  const [modSavedFor, setModSavedFor] = useState<number | null>(null);
+  const lastInvalidatedCountRef = useRef<number>(0);
 
   const [portalPreset, setPortalPreset] = useState<string>("Azure Portal");
   const [portalUrl, setPortalUrl] = useState<string>("https://portal.azure.com");
@@ -64,8 +90,9 @@ export default function AgentRunner() {
   const [loginDone, setLoginDone] = useState(false);
   const [portalError, setPortalError] = useState<string | null>(null);
   const [regionHint, setRegionHint] = useState<string>("");
-  const [isPaused, setIsPaused] = useState(false);
   const parsedTasks = parseSubtasksClient(prompt);
+
+  const isPaused = runState?.status === "paused";
 
   const handlePresetChange = (value: string) => {
     setPortalPreset(value);
@@ -107,42 +134,80 @@ export default function AgentRunner() {
     if (!prompt.trim()) return;
 
     setStatus("running");
-    setResult(null);
-    setScreenshots([]);
-    setEvidenceIds([]);
     setError(null);
+    setRunState(null);
+    setNextTaskMod("");
+    setModSavedFor(null);
+    lastInvalidatedCountRef.current = 0;
 
     try {
-      const data = await agentApi.run({
+      const { run_id } = await agentApi.startRun({
         prompt,
         control_id: controlId ? Number(controlId) : undefined,
         title: title || undefined,
         region_hint: regionHint || undefined,
       });
-      setResult(data.result);
-      setScreenshots(data.screenshots || []);
-      setEvidenceIds(data.evidence_ids || []);
-      setStatus("done");
-      setIsPaused(false);
-
-      if ((data.evidence_ids || []).length > 0) {
-        queryClient.invalidateQueries({ queryKey: ["evidence"] });
-        queryClient.invalidateQueries({ queryKey: ["submissions"] });
-      }
+      setRunId(run_id);
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Agent failed. Check backend logs.");
+      setError(err.response?.data?.detail || "Failed to start agent. Check backend logs.");
       setStatus("error");
     }
   };
 
+  useEffect(() => {
+    if (!runId) return;
+    let cancelled = false;
+    const tick = async () => {
+      while (!cancelled) {
+        try {
+          const data = await agentApi.getRun(runId);
+          if (cancelled) break;
+          setRunState(data);
+
+          const completedCount = (data.subtasks || []).filter((s: SubtaskState) => s.evidence_id).length;
+          if (completedCount > lastInvalidatedCountRef.current) {
+            queryClient.invalidateQueries({ queryKey: ["evidence"] });
+            queryClient.invalidateQueries({ queryKey: ["submissions"] });
+            lastInvalidatedCountRef.current = completedCount;
+          }
+
+          if (data.status === "completed") { setStatus("done"); break; }
+          if (data.status === "error") { setStatus("error"); setError(data.error || "Agent error"); break; }
+        } catch (err: any) {
+          if (!cancelled) { setStatus("error"); setError("Lost connection to backend"); }
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    };
+    tick();
+    return () => { cancelled = true; };
+  }, [runId, queryClient]);
+
   const handlePause = async () => {
     await agentApi.pause();
-    setIsPaused(true);
   };
 
   const handleResume = async () => {
+    if (runId && nextTaskMod.trim() && modSavedFor !== (runState?.current_index ?? -1) + 1) {
+      try {
+        await agentApi.modifyNext(runId, nextTaskMod);
+        setModSavedFor((runState?.current_index ?? -1) + 1);
+      } catch (err) {
+        // proceed anyway
+      }
+    }
     await agentApi.resume();
-    setIsPaused(false);
+  };
+
+  const handleSaveModification = async () => {
+    if (!runId || !nextTaskMod.trim()) return;
+    try {
+      const data = await agentApi.modifyNext(runId, nextTaskMod);
+      setModSavedFor(data.modified_index);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || "Failed to save modification");
+    }
   };
 
   return (
@@ -416,84 +481,206 @@ export default function AgentRunner() {
         </Box>
       </Paper>
 
-      {status === "running" && (
-        <Paper variant="outlined" sx={{ mt: 3, overflow: "hidden" }}>
-          <Box className="log-box">
-            {isPaused ? (
-              <div className="log-line">
-                ⏸ <strong>Paused.</strong> The agent will wait at the next task boundary. Interact with the browser window (switch region, scroll, click) — then press <strong>Resume Agent</strong> when ready.
-              </div>
-            ) : (
-              <div className="log-line">
-                Agent is navigating the browser. This may take 30–120 seconds per task.
-                {parsedTasks.length > 1 && ` Running ${parsedTasks.length} tasks sequentially.`}
-              </div>
-            )}
-          </Box>
-        </Paper>
+      {status === "error" && !runState && (
+        <Alert severity="error" sx={{ mt: 3 }}>{error}</Alert>
       )}
 
-      {status === "error" && (
-        <Alert severity="error" sx={{ mt: 3 }}>
-          {error}
-        </Alert>
-      )}
-
-      {status === "done" && (
+      {runState && (
         <Box sx={{ mt: 3 }}>
-          {evidenceIds.length > 0 && (
-            <Alert
-              severity="success"
-              icon={<CircleCheckFilledIcon size={18} />}
-              sx={{ mb: 3 }}
-            >
-              Saved <strong>{evidenceIds.length} screenshot{evidenceIds.length > 1 ? "s" : ""}</strong> as Evidence {evidenceIds.map((id) => `#${id}`).join(", ")} (status: pending). Check the Evidence and History pages.
-            </Alert>
-          )}
-
-          <Typography variant="h6" fontWeight={600} gutterBottom>
-            Result
-          </Typography>
-          <Paper variant="outlined" sx={{ overflow: "hidden" }}>
-            <Box className="log-box">
-              <div className="log-line" style={{ whiteSpace: "pre-wrap" }}>{result}</div>
-            </Box>
-          </Paper>
-
-          {screenshots.length > 0 && (
-            <Box sx={{ mt: 3 }}>
-              <Typography variant="h6" fontWeight={600} gutterBottom>
-                Screenshots ({screenshots.length})
-              </Typography>
-              <Stack spacing={2}>
-                {screenshots.map((shot, i) => (
-                  <Paper key={shot.file_name} variant="outlined" sx={{ overflow: "hidden" }}>
-                    <Box sx={{ px: 2, py: 1.25, backgroundColor: "rgba(0,0,0,0.03)", borderBottom: "1px solid", borderColor: "divider" }}>
-                      <Stack direction="row" alignItems="center" spacing={1.25}>
-                        <Chip label={`Task ${shot.subtask_index}`} size="small" color="primary" sx={{ fontWeight: 700 }} />
-                        <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                          {shot.subtask}
-                        </Typography>
-                        {evidenceIds[i] && (
-                          <Chip label={`Evidence #${evidenceIds[i]}`} size="small" variant="outlined" />
-                        )}
-                      </Stack>
-                    </Box>
-                    <Box sx={{ p: 1 }}>
-                      <Box
-                        component="img"
-                        src={`http://localhost:8000${shot.file_url}`}
-                        alt={`Screenshot of task ${shot.subtask_index}`}
-                        sx={{ width: "100%", display: "block", borderRadius: 1 }}
-                      />
-                    </Box>
-                  </Paper>
-                ))}
-              </Stack>
-            </Box>
-          )}
+          <RunTimeline
+            runState={runState}
+            isPaused={isPaused}
+            nextTaskMod={nextTaskMod}
+            setNextTaskMod={setNextTaskMod}
+            onSaveModification={handleSaveModification}
+            modSavedFor={modSavedFor}
+            error={error}
+          />
         </Box>
       )}
     </Box>
+  );
+}
+
+function RunTimeline({
+  runState,
+  isPaused,
+  nextTaskMod,
+  setNextTaskMod,
+  onSaveModification,
+  modSavedFor,
+  error,
+}: {
+  runState: RunState;
+  isPaused: boolean;
+  nextTaskMod: string;
+  setNextTaskMod: (v: string) => void;
+  onSaveModification: () => void;
+  modSavedFor: number | null;
+  error: string | null;
+}) {
+  const total = runState.subtasks.length;
+  const completedCount = runState.subtasks.filter((s) => s.status === "completed").length;
+  const currentIdx = runState.current_index;
+  const nextIdx = currentIdx + 1;
+  const evidenceIds = runState.subtasks.map((s) => s.evidence_id).filter((x): x is number => !!x);
+  const overallStatus = runState.status;
+  const elapsed =
+    runState.started_at
+      ? Math.round(((runState.completed_at || Date.now() / 1000) - runState.started_at))
+      : 0;
+
+  return (
+    <Stack spacing={2}>
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Stack direction="row" alignItems="center" spacing={2} flexWrap="wrap">
+          <Chip
+            label={
+              overallStatus === "completed"
+                ? "All tasks done"
+                : overallStatus === "paused"
+                ? "Paused — waiting for you"
+                : overallStatus === "error"
+                ? "Error"
+                : overallStatus === "starting"
+                ? "Starting agent..."
+                : `Running task ${currentIdx + 1} of ${total}`
+            }
+            color={
+              overallStatus === "completed"
+                ? "success"
+                : overallStatus === "paused"
+                ? "warning"
+                : overallStatus === "error"
+                ? "error"
+                : "primary"
+            }
+            sx={{ fontWeight: 700 }}
+            icon={overallStatus === "running" || overallStatus === "starting" ? <CircularProgress size={14} color="inherit" /> : undefined}
+          />
+          <Typography variant="caption" color="text.secondary">
+            {completedCount} of {total} screenshots captured · {elapsed}s elapsed
+            {evidenceIds.length > 0 && ` · Evidence ${evidenceIds.map((id) => `#${id}`).join(", ")}`}
+          </Typography>
+        </Stack>
+        {overallStatus === "error" && error && (
+          <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>
+        )}
+      </Paper>
+
+      {isPaused && nextIdx < total && (
+        <Paper variant="outlined" sx={{ p: 2, backgroundColor: "rgba(255,165,0,0.07)", borderColor: "warning.main" }}>
+          <Stack spacing={1.5}>
+            <Typography variant="subtitle2" fontWeight={700}>
+              ⏸ Paused — you can intervene now
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              The browser is yours. Switch tabs, change region, scroll, click — whatever the agent needs you to fix. Optionally add extra instructions for the next task:
+            </Typography>
+            <TextField
+              label={`Extra instructions for Task ${nextIdx + 1}`}
+              value={nextTaskMod}
+              onChange={(e) => setNextTaskMod(e.target.value)}
+              placeholder='e.g. "Switch to Mumbai region first" or "Look for cloudcare-tf-locks-v2, not the v1 one"'
+              multiline
+              rows={2}
+              fullWidth
+            />
+            <Stack direction="row" spacing={1.5}>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={onSaveModification}
+                disabled={!nextTaskMod.trim() || modSavedFor === nextIdx}
+              >
+                {modSavedFor === nextIdx ? "Saved ✓" : "Save instruction"}
+              </Button>
+              <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
+                Then press <strong>Resume Agent</strong> above
+              </Typography>
+            </Stack>
+          </Stack>
+        </Paper>
+      )}
+
+      {runState.subtasks.map((task) => (
+        <Paper key={task.index} variant="outlined" sx={{ overflow: "hidden" }}>
+          <Box sx={{ px: 2, py: 1.25, backgroundColor: "rgba(0,0,0,0.03)", borderBottom: "1px solid", borderColor: "divider" }}>
+            <Stack direction="row" alignItems="center" spacing={1.25} flexWrap="wrap">
+              <Chip
+                label={`Task ${task.index + 1}`}
+                size="small"
+                color={
+                  task.status === "completed"
+                    ? "success"
+                    : task.status === "running"
+                    ? "primary"
+                    : "default"
+                }
+                sx={{ fontWeight: 700 }}
+                icon={
+                  task.status === "completed" ? (
+                    <CircleCheckFilledIcon size={14} />
+                  ) : task.status === "running" ? (
+                    <CircularProgress size={12} color="inherit" />
+                  ) : undefined
+                }
+              />
+              <Typography variant="body2" sx={{ fontWeight: 500, flex: 1, minWidth: 0 }}>
+                {task.text}
+              </Typography>
+              {task.evidence_id && (
+                <Chip label={`Evidence #${task.evidence_id}`} size="small" variant="outlined" />
+              )}
+              {task.modification && (
+                <Chip label="Modified" size="small" color="warning" variant="outlined" />
+              )}
+            </Stack>
+            {task.modification && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, pl: 0.5, fontStyle: "italic" }}>
+                + {task.modification}
+              </Typography>
+            )}
+          </Box>
+
+          {task.status === "pending" && (
+            <Box sx={{ p: 2, textAlign: "center" }}>
+              <Typography variant="caption" color="text.secondary">⏳ Waiting...</Typography>
+            </Box>
+          )}
+
+          {task.status === "running" && !task.screenshot && (
+            <Box sx={{ p: 2, textAlign: "center" }}>
+              <CircularProgress size={20} />
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+                Agent is working on this task...
+              </Typography>
+            </Box>
+          )}
+
+          {task.screenshot && (
+            <Box sx={{ p: 1 }}>
+              <Box
+                component="img"
+                src={`http://localhost:8000${task.screenshot.file_url}`}
+                alt={`Screenshot of task ${task.index + 1}`}
+                sx={{ width: "100%", display: "block", borderRadius: 1 }}
+              />
+            </Box>
+          )}
+
+          {task.result && task.status === "completed" && (
+            <Box sx={{ px: 2, py: 1.5, borderTop: "1px solid", borderColor: "divider", backgroundColor: "rgba(0,0,0,0.02)" }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", display: "block", mb: 0.5 }}>
+                Agent report
+              </Typography>
+              <Typography variant="body2" sx={{ fontFamily: "monospace", fontSize: "0.78rem", whiteSpace: "pre-wrap" }}>
+                {task.result}
+              </Typography>
+            </Box>
+          )}
+        </Paper>
+      ))}
+    </Stack>
   );
 }
