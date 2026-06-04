@@ -34,7 +34,7 @@ export const submissionsApi = {
 export const agentApi = {
   run: (data: { prompt: string; control_id?: number; title?: string; region_hint?: string }) =>
     api.post("/agent/run", data).then((r) => r.data),
-  startRun: (data: { prompt: string; control_id?: number; title?: string; region_hint?: string }) =>
+  startRun: (data: { prompt: string; control_id?: number; title?: string; region_hint?: string; max_steps_per_task?: number }) =>
     api.post("/agent/start-run", data).then((r) => r.data),
   getRun: (runId: string) => api.get(`/agent/runs/${runId}`).then((r) => r.data),
   modifyNext: (runId: string, additional_instruction: string) =>

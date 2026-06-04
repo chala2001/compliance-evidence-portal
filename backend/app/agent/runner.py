@@ -268,6 +268,8 @@ async def _execute_run(
         run["status"] = "running"
 
         context_prefix = _build_context_prefix(run.get("region_hint"))
+        max_steps = int(run.get("max_steps_per_task") or DEFAULT_MAX_STEPS)
+        max_steps = max(5, min(60, max_steps))
         _pause_event.set()
 
         for idx, subtask_obj in enumerate(run["subtasks"]):
@@ -288,7 +290,7 @@ async def _execute_run(
 
             full_task = AGENT_INSTRUCTIONS + context_prefix + subtask_obj["text"] + extra
             agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
-            history = await agent.run(max_steps=DEFAULT_MAX_STEPS)
+            history = await agent.run(max_steps=max_steps)
 
             result_text = str(history.final_result() or f"Subtask {idx + 1} completed")
             subtask_obj["result"] = result_text
@@ -328,6 +330,7 @@ def start_background_run(
     control_id: int | None,
     title: str | None,
     submitted_by: str,
+    max_steps_per_task: int | None = None,
     on_subtask_complete: Callable[[str, dict, str], Awaitable[tuple[int | None, int | None]]] | None = None,
 ) -> str:
     run_id = uuid.uuid4().hex[:12]
@@ -338,6 +341,7 @@ def start_background_run(
         "control_id": control_id,
         "title": title,
         "submitted_by": submitted_by,
+        "max_steps_per_task": max_steps_per_task or DEFAULT_MAX_STEPS,
         "subtasks": [],
         "current_index": -1,
         "status": "starting",

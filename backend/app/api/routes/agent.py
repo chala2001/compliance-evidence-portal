@@ -26,6 +26,7 @@ class AgentRequest(BaseModel):
     title: str | None = None
     submitted_by: str = "ai-agent"
     region_hint: str | None = None
+    max_steps_per_task: int | None = None
 
 
 class OpenPortalRequest(BaseModel):
@@ -170,6 +171,7 @@ async def start_run(request: AgentRequest, db: Session = Depends(get_db)):
         control_id=request.control_id,
         title=request.title,
         submitted_by=request.submitted_by,
+        max_steps_per_task=request.max_steps_per_task,
         on_subtask_complete=persist_subtask,
     )
     return {"run_id": run_id, "status": "starting"}

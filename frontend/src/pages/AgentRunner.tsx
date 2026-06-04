@@ -14,7 +14,14 @@ import Alert from "@mui/material/Alert";
 import Divider from "@mui/material/Divider";
 import CircularProgress from "@mui/material/CircularProgress";
 import Chip from "@mui/material/Chip";
-import { BoltIcon, ArrowRightIcon, CircleCheckFilledIcon } from "@oxygen-ui/react-icons";
+import Fab from "@mui/material/Fab";
+import Dialog from "@mui/material/Dialog";
+import DialogTitle from "@mui/material/DialogTitle";
+import DialogContent from "@mui/material/DialogContent";
+import DialogActions from "@mui/material/DialogActions";
+import IconButton from "@mui/material/IconButton";
+import Tooltip from "@mui/material/Tooltip";
+import { BoltIcon, ArrowRightIcon, CircleCheckFilledIcon, LightbulbOnIcon, XMarkIcon } from "@oxygen-ui/react-icons";
 import { agentApi, frameworksApi, controlsApi } from "../api/client";
 import "../index.css";
 
@@ -26,6 +33,32 @@ const PORTAL_PRESETS: { label: string; url: string }[] = [
 ];
 
 const SUBTASK_RE = /^\s*(?:\d+[.)\-:]?|[-*•►▶→])\s+(.+)$/;
+
+const SS_PREFIX = "compliance.agent.v1.";
+
+function useSessionState<T>(key: string, initial: T): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const fullKey = SS_PREFIX + key;
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = sessionStorage.getItem(fullKey);
+      return stored !== null ? (JSON.parse(stored) as T) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(fullKey, JSON.stringify(value));
+    } catch {
+      /* quota / serialize errors — ignore, in-memory state still works */
+    }
+  }, [fullKey, value]);
+  return [value, setValue];
+}
+
+function clearSessionState(...keys: string[]) {
+  keys.forEach((k) => sessionStorage.removeItem(SS_PREFIX + k));
+}
 
 function parseSubtasksClient(prompt: string): string[] {
   const lines = prompt.trim().split("\n");
@@ -70,29 +103,51 @@ type RunState = {
 
 export default function AgentRunner() {
   const queryClient = useQueryClient();
-  const [frameworkId, setFrameworkId] = useState<number | "">("");
-  const [controlId, setControlId] = useState<number | "">("");
-  const [title, setTitle] = useState("");
-  const [prompt, setPrompt] = useState("");
-  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const [frameworkId, setFrameworkId] = useSessionState<number | "">("frameworkId", "");
+  const [controlId, setControlId] = useSessionState<number | "">("controlId", "");
+  const [title, setTitle] = useSessionState<string>("title", "");
+  const [prompt, setPrompt] = useSessionState<string>("prompt", "");
+  const [status, setStatus] = useSessionState<"idle" | "running" | "done" | "error">("status", "idle");
   const [error, setError] = useState<string | null>(null);
 
-  const [runId, setRunId] = useState<string | null>(null);
-  const [runState, setRunState] = useState<RunState | null>(null);
+  const [runId, setRunId] = useSessionState<string | null>("runId", null);
+  const [runState, setRunState] = useSessionState<RunState | null>("runState", null);
   const [nextTaskMod, setNextTaskMod] = useState<string>("");
   const [modSavedFor, setModSavedFor] = useState<number | null>(null);
   const lastInvalidatedCountRef = useRef<number>(0);
 
-  const [portalPreset, setPortalPreset] = useState<string>("Azure Portal");
-  const [portalUrl, setPortalUrl] = useState<string>("https://portal.azure.com");
+  const [portalPreset, setPortalPreset] = useSessionState<string>("portalPreset", "Azure Portal");
+  const [portalUrl, setPortalUrl] = useSessionState<string>("portalUrl", "https://portal.azure.com");
   const [openingPortal, setOpeningPortal] = useState(false);
-  const [browserUrl, setBrowserUrl] = useState<string | null>(null);
-  const [loginDone, setLoginDone] = useState(false);
+  const [browserUrl, setBrowserUrl] = useSessionState<string | null>("browserUrl", null);
+  const [loginDone, setLoginDone] = useSessionState<boolean>("loginDone", false);
   const [portalError, setPortalError] = useState<string | null>(null);
-  const [regionHint, setRegionHint] = useState<string>("");
+  const [regionHint, setRegionHint] = useSessionState<string>("regionHint", "");
+  const [complexity, setComplexity] = useSessionState<"quick" | "standard" | "thorough">("complexity", "standard");
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpSeen, setHelpSeen] = useSessionState<boolean>("helpSeen", false);
   const parsedTasks = parseSubtasksClient(prompt);
+  const maxStepsForComplexity = complexity === "quick" ? 15 : complexity === "thorough" ? 40 : 25;
+
+  const openHelp = () => {
+    setHelpOpen(true);
+    setHelpSeen(true);
+  };
 
   const isPaused = runState?.status === "paused";
+
+  const handleStartNewRun = () => {
+    clearSessionState("runId", "runState", "prompt", "status");
+    setRunId(null);
+    setRunState(null);
+    setPrompt("");
+    setStatus("idle");
+    setNextTaskMod("");
+    setModSavedFor(null);
+    setError(null);
+    lastInvalidatedCountRef.current = 0;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const handlePresetChange = (value: string) => {
     setPortalPreset(value);
@@ -146,6 +201,7 @@ export default function AgentRunner() {
         control_id: controlId ? Number(controlId) : undefined,
         title: title || undefined,
         region_hint: regionHint || undefined,
+        max_steps_per_task: maxStepsForComplexity,
       });
       setRunId(run_id);
     } catch (err: any) {
@@ -173,8 +229,23 @@ export default function AgentRunner() {
 
           if (data.status === "completed") { setStatus("done"); break; }
           if (data.status === "error") { setStatus("error"); setError(data.error || "Agent error"); break; }
+          if (data.status === "running" || data.status === "paused" || data.status === "starting") {
+            setStatus("running");
+          }
         } catch (err: any) {
-          if (!cancelled) { setStatus("error"); setError("Lost connection to backend"); }
+          if (!cancelled) {
+            // run_id from a prior backend process — clear stale state
+            const isMissing = err?.response?.status === 404;
+            if (isMissing) {
+              clearSessionState("runId", "runState", "status");
+              setRunId(null);
+              setRunState(null);
+              setStatus("idle");
+            } else {
+              setStatus("error");
+              setError("Lost connection to backend");
+            }
+          }
           break;
         }
         await new Promise((r) => setTimeout(r, 1500));
@@ -182,7 +253,7 @@ export default function AgentRunner() {
     };
     tick();
     return () => { cancelled = true; };
-  }, [runId, queryClient]);
+  }, [runId, queryClient, setRunState, setStatus, setRunId]);
 
   const handlePause = async () => {
     await agentApi.pause();
@@ -393,6 +464,22 @@ export default function AgentRunner() {
               Task
             </Typography>
 
+            <FormControl fullWidth>
+              <InputLabel>Task complexity</InputLabel>
+              <Select
+                label="Task complexity"
+                value={complexity}
+                onChange={(e) => setComplexity(e.target.value as "quick" | "standard" | "thorough")}
+              >
+                <MenuItem value="quick">Quick — 15 steps per task (simple navigation, single location)</MenuItem>
+                <MenuItem value="standard">Standard — 25 steps per task (default, multi-step within one region)</MenuItem>
+                <MenuItem value="thorough">Thorough — 40 steps per task (multi-region, deep search, complex)</MenuItem>
+              </Select>
+            </FormControl>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: -1, pl: 0.5 }}>
+              A "step" is one agent action (click, type, scroll, screenshot). Pick Thorough when crossing regions or doing fuzzy searches.
+            </Typography>
+
             <Alert severity="info" sx={{ "& .MuiAlert-message": { width: "100%" } }}>
               <Typography variant="body2" sx={{ mb: 0.5 }}>
                 <strong>Tip:</strong> Use a numbered list to capture <strong>multiple screenshots in one run</strong> — one per task.
@@ -496,8 +583,193 @@ export default function AgentRunner() {
             modSavedFor={modSavedFor}
             error={error}
           />
+
+          {(runState.status === "completed" || runState.status === "error") && (
+            <Paper variant="outlined" sx={{ mt: 3, p: 2.5, backgroundColor: "rgba(255,115,0,0.05)" }}>
+              <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ xs: "stretch", sm: "center" }} spacing={2}>
+                <Box sx={{ flex: 1 }}>
+                  <Typography variant="subtitle1" fontWeight={700}>
+                    Run finished — start another?
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Your login session and environment context are kept. Just type a new prompt.
+                  </Typography>
+                </Box>
+                <Button
+                  variant="contained"
+                  size="large"
+                  onClick={handleStartNewRun}
+                  startIcon={<ArrowRightIcon size={18} />}
+                  sx={{ minWidth: 200 }}
+                >
+                  Start a New Run
+                </Button>
+              </Stack>
+            </Paper>
+          )}
         </Box>
       )}
+
+      <Tooltip title="Quick guide" placement="left">
+        <Fab
+          color="primary"
+          aria-label="Open quick guide"
+          onClick={openHelp}
+          sx={{
+            position: "fixed",
+            bottom: 28,
+            right: 28,
+            zIndex: 1200,
+            boxShadow: "0 6px 16px rgba(255,115,0,0.35)",
+            animation: helpSeen ? "none" : "pulseHelp 2.4s ease-in-out infinite",
+            "@keyframes pulseHelp": {
+              "0%, 100%": { transform: "scale(1)", boxShadow: "0 6px 16px rgba(255,115,0,0.35)" },
+              "50%": { transform: "scale(1.08)", boxShadow: "0 10px 26px rgba(255,115,0,0.55)" },
+            },
+            "&::after": helpSeen
+              ? {}
+              : {
+                  content: '""',
+                  position: "absolute",
+                  inset: -4,
+                  borderRadius: "50%",
+                  border: "2px solid",
+                  borderColor: "primary.main",
+                  opacity: 0,
+                  animation: "ringHelp 2.4s ease-out infinite",
+                },
+            "@keyframes ringHelp": {
+              "0%": { transform: "scale(1)", opacity: 0.6 },
+              "100%": { transform: "scale(1.5)", opacity: 0 },
+            },
+          }}
+        >
+          <LightbulbOnIcon size={22} />
+        </Fab>
+      </Tooltip>
+
+      <Dialog open={helpOpen} onClose={() => setHelpOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ pr: 6, pb: 1.5 }}>
+          <Stack direction="row" alignItems="center" spacing={1.5}>
+            <Box sx={{ color: "primary.main", display: "flex" }}>
+              <LightbulbOnIcon size={24} />
+            </Box>
+            <Box>
+              <Typography variant="h6" fontWeight={700} sx={{ lineHeight: 1.2 }}>
+                Quick Guide
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                How to use the AI Agent in under a minute
+              </Typography>
+            </Box>
+          </Stack>
+          <IconButton
+            onClick={() => setHelpOpen(false)}
+            sx={{ position: "absolute", right: 12, top: 12 }}
+            size="small"
+          >
+            <XMarkIcon size={18} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Stack spacing={2.75}>
+            <Box>
+              <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+                <Chip label="1" size="small" color="primary" sx={{ fontWeight: 700, minWidth: 26, height: 22 }} />
+                <Typography variant="subtitle1" fontWeight={700}>
+                  Open Browser & Log In
+                </Typography>
+              </Stack>
+              <Stack spacing={0.4} sx={{ pl: 4.5 }}>
+                <Typography variant="body2">• Pick a target portal (Azure / AWS / WSO2)</Typography>
+                <Typography variant="body2">• Click <strong>Open Browser & Login</strong> — a Chrome window opens</Typography>
+                <Typography variant="body2">• Log in <strong>yourself</strong> with your credentials + MFA</Typography>
+                <Typography variant="body2">• Click <strong>I've logged in</strong> when done</Typography>
+              </Stack>
+            </Box>
+
+            <Box>
+              <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+                <Chip label="2" size="small" color="primary" sx={{ fontWeight: 700, minWidth: 26, height: 22 }} />
+                <Typography variant="subtitle1" fontWeight={700}>
+                  Tell the Agent What to Do
+                </Typography>
+              </Stack>
+              <Stack spacing={0.4} sx={{ pl: 4.5 }}>
+                <Typography variant="body2">• Set <strong>Environment Hint</strong> — e.g. <em>"AWS region: Mumbai ap-south-1"</em></Typography>
+                <Typography variant="body2">• Choose <strong>Task complexity</strong>: Quick (15) / Standard (25) / Thorough (40 steps)</Typography>
+                <Typography variant="body2">• Type your task — one line for a single capture, or numbered list for multiple:</Typography>
+                <Box
+                  component="pre"
+                  sx={{
+                    m: 0,
+                    mt: 0.5,
+                    p: 1.25,
+                    fontSize: "0.74rem",
+                    backgroundColor: "rgba(0,0,0,0.04)",
+                    borderRadius: 1,
+                    whiteSpace: "pre-wrap",
+                    fontFamily: "monospace",
+                  }}
+                >
+{`1. Go to S3 cloud-care, screenshot objects
+2. Go to EC2 cloud-care, screenshot details
+3. Go to DynamoDB cloudcare-tf, screenshot items`}
+                </Box>
+                <Typography variant="body2">• (Optional) Link to a compliance Control to auto-create Evidence rows</Typography>
+              </Stack>
+            </Box>
+
+            <Box>
+              <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+                <Chip label="3" size="small" color="primary" sx={{ fontWeight: 700, minWidth: 26, height: 22 }} />
+                <Typography variant="subtitle1" fontWeight={700}>
+                  While the Agent Runs
+                </Typography>
+              </Stack>
+              <Stack spacing={0.4} sx={{ pl: 4.5 }}>
+                <Typography variant="body2">• Watch the live timeline — each task moves from pending → running → done</Typography>
+                <Typography variant="body2">• Screenshots appear one by one as they're captured</Typography>
+                <Typography variant="body2">• Click <strong>Pause</strong> to intervene → fix the browser manually → click <strong>Resume</strong></Typography>
+                <Typography variant="body2">• While paused, type extra instructions for the next task</Typography>
+              </Stack>
+            </Box>
+
+            <Box
+              sx={{
+                backgroundColor: "rgba(255,115,0,0.07)",
+                borderRadius: 1.5,
+                p: 1.75,
+                borderLeft: "3px solid",
+                borderColor: "primary.main",
+              }}
+            >
+              <Stack direction="row" alignItems="center" spacing={1} mb={1}>
+                <Box sx={{ color: "primary.main", display: "flex" }}>
+                  <LightbulbOnIcon size={18} />
+                </Box>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  Pro Tips
+                </Typography>
+              </Stack>
+              <Stack spacing={0.5}>
+                <Typography variant="body2">★ Always set Environment Hint for cross-region work — saves the agent from searching the wrong region</Typography>
+                <Typography variant="body2">★ Pick <strong>Thorough</strong> when fuzzy-searching across services or regions</Typography>
+                <Typography variant="body2">★ Use <strong>Pause</strong> to manually switch region/tab mid-run — the next task picks up from your state</Typography>
+                <Typography variant="body2">★ Your session persists across page navigation — closing the tab is the only "logout"</Typography>
+                <Typography variant="body2">★ The agent <strong>never sees your password</strong> — only you log in</Typography>
+              </Stack>
+            </Box>
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 1.5 }}>
+          <Button onClick={() => setHelpOpen(false)} variant="contained">
+            Got it
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
