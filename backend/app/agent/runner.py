@@ -63,10 +63,13 @@ _shared_browser: BrowserSession | None = None
 def _get_browser() -> BrowserSession:
     global _shared_browser
     if _shared_browser is None:
+        channel = (settings.BROWSER_CHANNEL or "chrome").strip().lower()
+        profile_dir = BROWSER_PROFILE_DIR / channel
+        profile_dir.mkdir(exist_ok=True)
         profile = BrowserProfile(
-            channel="chrome",
+            channel=channel,
             headless=False,
-            user_data_dir=str(BROWSER_PROFILE_DIR),
+            user_data_dir=str(profile_dir),
             keep_alive=True,
         )
         _shared_browser = BrowserSession(browser_profile=profile)
