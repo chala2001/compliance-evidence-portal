@@ -1,12 +1,18 @@
 import asyncio
 import base64
 import re
+import time
 import uuid
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from browser_use import Agent, BrowserProfile, BrowserSession
 
 from app.config import settings
+
+DEFAULT_MAX_STEPS = 15
+
+RUNS: dict[str, dict[str, Any]] = {}
 
 _SUBTASK_PATTERN = re.compile(r"^\s*(?:\d+[.)\-:]?|[-*•►▶→])\s+(.+)$")
 
@@ -57,21 +63,56 @@ _shared_browser: BrowserSession | None = None
 def _get_browser() -> BrowserSession:
     global _shared_browser
     if _shared_browser is None:
+        channel = (settings.BROWSER_CHANNEL or "chrome").strip().lower()
+        profile_dir = BROWSER_PROFILE_DIR / channel
+        profile_dir.mkdir(exist_ok=True)
         profile = BrowserProfile(
-            channel="chrome",
+            channel=channel,
             headless=False,
-            user_data_dir=str(BROWSER_PROFILE_DIR),
+            user_data_dir=str(profile_dir),
             keep_alive=True,
         )
         _shared_browser = BrowserSession(browser_profile=profile)
     return _shared_browser
 
 
+async def _reset_shared_browser() -> None:
+    """Kill any cached BrowserSession and force a fresh launch next time."""
+    global _shared_browser
+    if _shared_browser is not None:
+        try:
+            await _shared_browser.kill()
+        except Exception:
+            pass
+        try:
+            await _shared_browser.stop()
+        except Exception:
+            pass
+    _shared_browser = None
+
+
+async def reset_browser() -> dict:
+    await _reset_shared_browser()
+    return {"status": "reset"}
+
+
 async def open_browser_at(url: str) -> dict:
-    browser = _get_browser()
-    await browser.start()
-    await browser.navigate_to(url)
-    return {"status": "opened", "url": url}
+    async def _attempt() -> str:
+        browser = _get_browser()
+        await browser.start()
+        await browser.navigate_to(url)
+        # Verify the browser is actually responsive — a dead BrowserSession
+        # silently accepts navigate_to but can't return a URL.
+        return await browser.get_current_page_url()
+
+    try:
+        current_url = await _attempt()
+        return {"status": "opened", "url": url, "current_url": current_url}
+    except Exception:
+        # Stale or dead singleton — drop it and retry once with a fresh launch.
+        await _reset_shared_browser()
+        current_url = await _attempt()
+        return {"status": "opened", "url": url, "current_url": current_url, "recovered": True}
 
 
 async def get_browser_status() -> dict:
@@ -199,7 +240,7 @@ async def run_agent(prompt: str, region_hint: str | None = None) -> dict:
 
         full_task = AGENT_INSTRUCTIONS + context_prefix + subtask
         agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
-        history = await agent.run(max_steps=25)
+        history = await agent.run(max_steps=DEFAULT_MAX_STEPS)
 
         result_text = history.final_result() or f"Subtask {idx + 1} completed"
         all_results.append({"subtask": subtask, "result": str(result_text)})
@@ -229,3 +270,120 @@ async def run_agent(prompt: str, region_hint: str | None = None) -> dict:
         "screenshot_url": last_shot["file_url"] if last_shot else None,
         "file_name": last_shot["file_name"] if last_shot else None,
     }
+
+
+def _build_context_prefix(region_hint: str | None) -> str:
+    if not region_hint or not region_hint.strip():
+        return ""
+    return (
+        "ENVIRONMENT CONTEXT (apply to all tasks):\n"
+        f"{region_hint.strip()}\n"
+        "Before searching for any resource, ensure you have switched to the correct "
+        "region/subscription/workspace mentioned above. If you are in a different "
+        "region, switch first (use the region selector usually at the top-right of "
+        "AWS / Azure consoles), then continue with the task.\n\n"
+    )
+
+
+async def _execute_run(
+    run_id: str,
+    on_subtask_complete: Callable[[str, dict, str], Awaitable[tuple[int | None, int | None]]] | None = None,
+) -> None:
+    run = RUNS[run_id]
+    try:
+        llm = _build_llm()
+        browser = _get_browser()
+        await browser.start()
+
+        subtasks = parse_subtasks(run["prompt"])
+        run["subtasks"] = [
+            {"index": i, "text": s, "status": "pending", "result": None, "screenshot": None, "evidence_id": None, "submission_id": None}
+            for i, s in enumerate(subtasks)
+        ]
+        run["status"] = "running"
+
+        context_prefix = _build_context_prefix(run.get("region_hint"))
+        max_steps = int(run.get("max_steps_per_task") or DEFAULT_MAX_STEPS)
+        max_steps = max(5, min(60, max_steps))
+        _pause_event.set()
+
+        for idx, subtask_obj in enumerate(run["subtasks"]):
+            if idx > 0 and is_paused():
+                run["status"] = "paused"
+                await _pause_event.wait()
+                run["status"] = "running"
+
+            run["current_index"] = idx
+            subtask_obj["status"] = "running"
+            subtask_obj["started_at"] = time.time()
+
+            mod = run.get("modifications", {}).get(idx) or run.get("modifications", {}).get(str(idx))
+            extra = ""
+            if mod:
+                extra = f"\n\nADDITIONAL INSTRUCTIONS FROM USER FOR THIS TASK (apply on top of the task above):\n{mod}\n"
+                subtask_obj["modification"] = mod
+
+            full_task = AGENT_INSTRUCTIONS + context_prefix + subtask_obj["text"] + extra
+            agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
+            history = await agent.run(max_steps=max_steps)
+
+            result_text = str(history.final_result() or f"Subtask {idx + 1} completed")
+            subtask_obj["result"] = result_text
+
+            screenshots = history.screenshots()
+            if screenshots:
+                name, url = _save_screenshot(screenshots[-1])
+                shot = {
+                    "subtask": subtask_obj["text"][:120],
+                    "subtask_index": idx + 1,
+                    "file_name": name,
+                    "file_url": url,
+                }
+                subtask_obj["screenshot"] = shot
+                if on_subtask_complete:
+                    try:
+                        evidence_id, submission_id = await on_subtask_complete(run_id, shot, result_text)
+                        subtask_obj["evidence_id"] = evidence_id
+                        subtask_obj["submission_id"] = submission_id
+                    except Exception as ex:
+                        subtask_obj["persist_error"] = str(ex)
+
+            subtask_obj["status"] = "completed"
+            subtask_obj["completed_at"] = time.time()
+
+        run["status"] = "completed"
+        run["completed_at"] = time.time()
+    except Exception as e:
+        run["status"] = "error"
+        run["error"] = str(e)
+        run["completed_at"] = time.time()
+
+
+def start_background_run(
+    prompt: str,
+    region_hint: str | None,
+    control_id: int | None,
+    title: str | None,
+    submitted_by: str,
+    max_steps_per_task: int | None = None,
+    on_subtask_complete: Callable[[str, dict, str], Awaitable[tuple[int | None, int | None]]] | None = None,
+) -> str:
+    run_id = uuid.uuid4().hex[:12]
+    RUNS[run_id] = {
+        "run_id": run_id,
+        "prompt": prompt,
+        "region_hint": region_hint,
+        "control_id": control_id,
+        "title": title,
+        "submitted_by": submitted_by,
+        "max_steps_per_task": max_steps_per_task or DEFAULT_MAX_STEPS,
+        "subtasks": [],
+        "current_index": -1,
+        "status": "starting",
+        "started_at": time.time(),
+        "completed_at": None,
+        "error": None,
+        "modifications": {},
+    }
+    asyncio.create_task(_execute_run(run_id, on_subtask_complete=on_subtask_complete))
+    return run_id

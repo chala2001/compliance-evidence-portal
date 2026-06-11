@@ -1,36 +1,26 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
-import FormControl from "@mui/material/FormControl";
-import InputLabel from "@mui/material/InputLabel";
-import Select from "@mui/material/Select";
-import MenuItem from "@mui/material/MenuItem";
 import Button from "@mui/material/Button";
 import Alert from "@mui/material/Alert";
 import { PlusIcon, CircleCheckFilledIcon } from "@oxygen-ui/react-icons";
-import { frameworksApi, controlsApi, evidenceApi } from "../api/client";
+import { evidenceApi } from "../api/client";
+import ControlPicker from "../components/ControlPicker";
+import ProductPicker from "../components/ProductPicker";
+import FrameworkPicker from "../components/FrameworkPicker";
 
 export default function SubmitEvidence() {
+  const [productId, setProductId] = useState<number | "">("");
   const [frameworkId, setFrameworkId] = useState<number | "">("");
   const [controlId, setControlId] = useState<number | "">("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [success, setSuccess] = useState(false);
-
-  const { data: frameworks = [] } = useQuery({
-    queryKey: ["frameworks"],
-    queryFn: frameworksApi.list,
-  });
-  const { data: controls = [] } = useQuery({
-    queryKey: ["controls", frameworkId || undefined],
-    queryFn: () => controlsApi.list(frameworkId || undefined),
-    enabled: !!frameworkId,
-  });
 
   const mutation = useMutation({
     mutationFn: evidenceApi.create,
@@ -39,6 +29,7 @@ export default function SubmitEvidence() {
       setTitle("");
       setDescription("");
       setFile(null);
+      setProductId("");
       setFrameworkId("");
       setControlId("");
     },
@@ -80,31 +71,33 @@ export default function SubmitEvidence() {
       <Paper variant="outlined" sx={{ p: { xs: 3, sm: 4 } }}>
         <Box component="form" onSubmit={handleSubmit}>
           <Stack spacing={2.5}>
-            <FormControl fullWidth required>
-              <InputLabel>Framework</InputLabel>
-              <Select
-                label="Framework"
-                value={frameworkId}
-                onChange={(e) => { setFrameworkId(e.target.value as number); setControlId(""); }}
-              >
-                {frameworks.map((f: any) => (
-                  <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <ProductPicker
+              value={productId}
+              onChange={(id) => {
+                setProductId(id);
+                setFrameworkId("");
+                setControlId("");
+              }}
+              required
+              helperText="Pick the product this evidence belongs to."
+            />
 
-            <FormControl fullWidth required disabled={!frameworkId}>
-              <InputLabel>Control</InputLabel>
-              <Select
-                label="Control"
-                value={controlId}
-                onChange={(e) => setControlId(e.target.value as number)}
-              >
-                {controls.map((c: any) => (
-                  <MenuItem key={c.id} value={c.id}>{c.control_ref} — {c.title}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <FrameworkPicker
+              productId={productId}
+              value={frameworkId}
+              onChange={(id) => {
+                setFrameworkId(id);
+                setControlId("");
+              }}
+              required
+            />
+
+            <ControlPicker
+              frameworkId={frameworkId}
+              controlId={controlId}
+              onControlChange={(id) => setControlId(id)}
+              required
+            />
 
             <TextField
               label="Title"

@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Box from "@mui/material/Box";
 import Grid from "@mui/material/Grid";
@@ -13,8 +14,18 @@ import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
 import Chip from "@mui/material/Chip";
 import Stack from "@mui/material/Stack";
+import FormControl from "@mui/material/FormControl";
+import InputLabel from "@mui/material/InputLabel";
+import Select from "@mui/material/Select";
+import MenuItem from "@mui/material/MenuItem";
 import { DocumentIcon, EnvelopeIcon, HierarchyIcon, ClockAsteriskIcon } from "@oxygen-ui/react-icons";
-import { evidenceApi, submissionsApi, frameworksApi } from "../api/client";
+import { evidenceApi, submissionsApi, frameworksApi, productsApi, controlsApi } from "../api/client";
+
+type Product = { id: number; name: string };
+type Framework = { id: number; name: string; product_id: number };
+type Control = { id: number; framework_id: number };
+type Evidence = { id: number; control_id: number };
+type Submission = { id: number; evidence_id: number; submitted_by: string; status: string; submitted_at: string };
 
 const statusColor = (status: string): "warning" | "success" | "error" | "default" => {
   if (status === "pending") return "warning";
@@ -24,9 +35,27 @@ const statusColor = (status: string): "warning" | "success" | "error" | "default
 };
 
 export default function Dashboard() {
-  const { data: evidence = [] } = useQuery({ queryKey: ["evidence"], queryFn: evidenceApi.list });
-  const { data: submissions = [] } = useQuery({ queryKey: ["submissions"], queryFn: submissionsApi.list });
-  const { data: frameworks = [] } = useQuery({ queryKey: ["frameworks"], queryFn: frameworksApi.list });
+  const [productId, setProductId] = useState<number | "">("");
+
+  const { data: products = [] } = useQuery<Product[]>({ queryKey: ["products"], queryFn: productsApi.list });
+  const { data: allFrameworks = [] } = useQuery<Framework[]>({ queryKey: ["frameworks"], queryFn: () => frameworksApi.list() });
+  const { data: allControls = [] } = useQuery<Control[]>({ queryKey: ["controls"], queryFn: () => controlsApi.list() });
+  const { data: allEvidence = [] } = useQuery<Evidence[]>({ queryKey: ["evidence"], queryFn: evidenceApi.list });
+  const { data: allSubmissions = [] } = useQuery<Submission[]>({ queryKey: ["submissions"], queryFn: submissionsApi.list });
+
+  const { frameworks, evidence, submissions } = useMemo(() => {
+    if (productId === "") {
+      return { frameworks: allFrameworks, evidence: allEvidence, submissions: allSubmissions };
+    }
+    const pid = Number(productId);
+    const fws = allFrameworks.filter((f) => f.product_id === pid);
+    const fwIds = new Set(fws.map((f) => f.id));
+    const ctrlIds = new Set(allControls.filter((c) => fwIds.has(c.framework_id)).map((c) => c.id));
+    const evs = allEvidence.filter((e) => ctrlIds.has(e.control_id));
+    const evIds = new Set(evs.map((e) => e.id));
+    const subs = allSubmissions.filter((s) => evIds.has(s.evidence_id));
+    return { frameworks: fws, evidence: evs, submissions: subs };
+  }, [productId, allFrameworks, allControls, allEvidence, allSubmissions]);
 
   const stats = [
     {
@@ -52,7 +81,7 @@ export default function Dashboard() {
     },
     {
       label: "Pending Reviews",
-      value: submissions.filter((s: any) => s.status === "pending").length,
+      value: submissions.filter((s) => s.status === "pending").length,
       icon: <ClockAsteriskIcon size={26} />,
       bg: "rgba(234,179,8,0.10)",
       iconColor: "#EAB308",
@@ -61,14 +90,32 @@ export default function Dashboard() {
 
   return (
     <Box>
-      <Typography variant="h4" gutterBottom>
-        Dashboard
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Overview of evidence, submissions, and pending reviews across all frameworks.
-      </Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1, flexWrap: "wrap", gap: 2 }}>
+        <Box>
+          <Typography variant="h4" gutterBottom>
+            Dashboard
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Overview of evidence, submissions, and pending reviews
+            {productId !== "" ? ` for "${products.find((p) => p.id === Number(productId))?.name ?? "selected product"}"` : " across all products"}.
+          </Typography>
+        </Box>
+        <FormControl size="small" sx={{ minWidth: 220 }}>
+          <InputLabel>Product</InputLabel>
+          <Select
+            label="Product"
+            value={productId}
+            onChange={(e) => setProductId(e.target.value as number | "")}
+          >
+            <MenuItem value="">All Products</MenuItem>
+            {products.map((p) => (
+              <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Stack>
 
-      <Grid container spacing={2.5} sx={{ mb: 5 }}>
+      <Grid container spacing={2.5} sx={{ mt: 2, mb: 5 }}>
         {stats.map(({ label, value, icon, bg, iconColor }) => (
           <Grid item xs={12} sm={6} md={3} key={label}>
             <Card>
@@ -117,7 +164,7 @@ export default function Dashboard() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {submissions.slice(0, 5).map((s: any) => (
+            {submissions.slice(0, 5).map((s) => (
               <TableRow key={s.id} hover>
                 <TableCell>{s.id}</TableCell>
                 <TableCell>{s.submitted_by}</TableCell>
@@ -130,7 +177,7 @@ export default function Dashboard() {
             {submissions.length === 0 && (
               <TableRow>
                 <TableCell colSpan={4} align="center" sx={{ color: "text.disabled", py: 5 }}>
-                  No submissions yet
+                  No submissions yet{productId !== "" ? " for this product" : ""}
                 </TableCell>
               </TableRow>
             )}

@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from alembic import context
 
 from app.database import Base
-from app.models import framework, control, evidence, submission  # noqa: F401
+from app.models import product, framework, control, evidence, submission  # noqa: F401
 from app.config import settings
 
 config = context.config

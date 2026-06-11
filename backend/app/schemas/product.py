@@ -1,20 +1,18 @@
 from pydantic import BaseModel
 
 
-class FrameworkCreate(BaseModel):
-    product_id: int
+class ProductCreate(BaseModel):
     name: str
     description: str | None = None
 
 
-class FrameworkUpdate(BaseModel):
+class ProductUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
 
 
-class FrameworkResponse(BaseModel):
+class ProductResponse(BaseModel):
     id: int
-    product_id: int
     name: str
     description: str | None
 

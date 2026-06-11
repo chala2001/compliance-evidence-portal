@@ -1,10 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.control import Control
-from app.schemas.control import ControlCreate, ControlResponse
+from app.schemas.control import ControlCreate, ControlResponse, ControlUpdate
 
 router = APIRouter(prefix="/controls", tags=["Controls"])
+
+UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
 
 
 @router.get("/", response_model=list[ControlResponse])
@@ -33,3 +37,35 @@ def get_control(control_id: int, db: Session = Depends(get_db)):
     if not control:
         raise HTTPException(status_code=404, detail="Control not found")
     return control
+
+
+@router.patch("/{control_id}", response_model=ControlResponse)
+def update_control(control_id: int, payload: ControlUpdate, db: Session = Depends(get_db)):
+    control = db.query(Control).filter(Control.id == control_id).first()
+    if not control:
+        raise HTTPException(status_code=404, detail="Control not found")
+    if payload.control_ref is not None:
+        control.control_ref = payload.control_ref.strip()
+    if payload.title is not None:
+        control.title = payload.title.strip()
+    if payload.description is not None:
+        control.description = payload.description.strip() or None
+    db.commit()
+    db.refresh(control)
+    return control
+
+
+@router.delete("/{control_id}", status_code=204)
+def delete_control(control_id: int, db: Session = Depends(get_db)):
+    control = db.query(Control).filter(Control.id == control_id).first()
+    if not control:
+        raise HTTPException(status_code=404, detail="Control not found")
+    file_names = [ev.file_name for ev in control.evidence]
+    db.delete(control)
+    db.commit()
+    for name in file_names:
+        try:
+            (UPLOAD_DIR / name).unlink(missing_ok=True)
+        except Exception:
+            pass
+    return Response(status_code=204)
