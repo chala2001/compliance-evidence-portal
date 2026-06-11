@@ -12,6 +12,7 @@ const navItems = [
   { label: "Submit", to: "/submit" },
   { label: "History", to: "/history" },
   { label: "Agent", to: "/agent" },
+  { label: "Cost", to: "/cost" },
 ];
 
 export default function Navbar() {

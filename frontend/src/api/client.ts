@@ -53,6 +53,15 @@ export const submissionsApi = {
     api.post("/submissions/", data).then((r) => r.data),
 };
 
+export const usageApi = {
+  summary: () => api.get("/usage/summary").then((r) => r.data),
+  timeseries: (days = 30) =>
+    api.get("/usage/timeseries", { params: { days } }).then((r) => r.data),
+  byModel: () => api.get("/usage/by-model").then((r) => r.data),
+  recent: (limit = 20) =>
+    api.get("/usage/recent", { params: { limit } }).then((r) => r.data),
+};
+
 export const agentApi = {
   run: (data: { prompt: string; control_id?: number; title?: string; region_hint?: string }) =>
     api.post("/agent/run", data).then((r) => r.data),
