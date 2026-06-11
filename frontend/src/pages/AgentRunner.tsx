@@ -81,6 +81,15 @@ function parseSubtasksClient(prompt: string): string[] {
   return joined.length ? joined : prompt.trim() ? [prompt.trim()] : [];
 }
 
+type Usage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  llm_calls: number;
+  cost_usd: number;
+  model: string;
+};
+
 type SubtaskState = {
   index: number;
   text: string;
@@ -92,6 +101,7 @@ type SubtaskState = {
   modification?: string;
   started_at?: number;
   completed_at?: number;
+  usage?: Usage;
 };
 
 type RunState = {
@@ -102,7 +112,21 @@ type RunState = {
   error?: string | null;
   started_at?: number;
   completed_at?: number | null;
+  total_usage?: Usage;
 };
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "k";
+  return String(n);
+}
+
+function formatCost(usd: number): string {
+  if (usd === 0) return "free";
+  if (usd < 0.01) return `$${usd.toFixed(5)}`;
+  if (usd < 1) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
 
 export default function AgentRunner() {
   const queryClient = useQueryClient();
@@ -849,6 +873,62 @@ function RunTimeline({
             {evidenceIds.length > 0 && ` · Evidence ${evidenceIds.map((id) => `#${id}`).join(", ")}`}
           </Typography>
         </Stack>
+
+        {runState.total_usage && runState.total_usage.total_tokens > 0 && (
+          <Stack
+            direction="row"
+            spacing={1.25}
+            alignItems="center"
+            sx={{
+              mt: 1.5,
+              pt: 1.25,
+              borderTop: "1px solid",
+              borderColor: "divider",
+              flexWrap: "wrap",
+              rowGap: 0.75,
+            }}
+          >
+            <Typography
+              variant="caption"
+              fontWeight={700}
+              sx={{
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+                color: "text.secondary",
+              }}
+            >
+              LLM usage
+            </Typography>
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${formatTokens(runState.total_usage.input_tokens)} in`}
+              sx={{ height: 22, fontWeight: 600 }}
+            />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${formatTokens(runState.total_usage.output_tokens)} out`}
+              sx={{ height: 22, fontWeight: 600 }}
+            />
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${runState.total_usage.llm_calls} calls`}
+              sx={{ height: 22, fontWeight: 600 }}
+            />
+            <Chip
+              size="small"
+              color="primary"
+              label={`Total cost: ${formatCost(runState.total_usage.cost_usd)}`}
+              sx={{ height: 22, fontWeight: 700 }}
+            />
+            <Typography variant="caption" color="text.disabled">
+              ({runState.total_usage.model})
+            </Typography>
+          </Stack>
+        )}
+
         {overallStatus === "error" && error && (
           <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>
         )}
@@ -963,6 +1043,56 @@ function RunTimeline({
               <Typography variant="body2" sx={{ fontFamily: "monospace", fontSize: "0.78rem", whiteSpace: "pre-wrap" }}>
                 {task.result}
               </Typography>
+            </Box>
+          )}
+
+          {task.usage && task.status === "completed" && task.usage.total_tokens > 0 && (
+            <Box
+              sx={{
+                px: 2,
+                py: 1,
+                borderTop: "1px solid",
+                borderColor: "divider",
+                backgroundColor: "rgba(255,115,0,0.04)",
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" rowGap={0.5}>
+                <Typography
+                  variant="caption"
+                  fontWeight={700}
+                  sx={{
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    color: "text.secondary",
+                  }}
+                >
+                  Cost
+                </Typography>
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${formatTokens(task.usage.input_tokens)} in`}
+                  sx={{ height: 20, fontSize: "0.7rem", fontWeight: 600 }}
+                />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${formatTokens(task.usage.output_tokens)} out`}
+                  sx={{ height: 20, fontSize: "0.7rem", fontWeight: 600 }}
+                />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${task.usage.llm_calls} calls`}
+                  sx={{ height: 20, fontSize: "0.7rem", fontWeight: 600 }}
+                />
+                <Chip
+                  size="small"
+                  color="primary"
+                  label={formatCost(task.usage.cost_usd)}
+                  sx={{ height: 20, fontSize: "0.7rem", fontWeight: 700 }}
+                />
+              </Stack>
             </Box>
           )}
         </Paper>
