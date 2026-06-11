@@ -8,6 +8,12 @@ class ControlCreate(BaseModel):
     description: str | None = None
 
 
+class ControlUpdate(BaseModel):
+    control_ref: str | None = None
+    title: str | None = None
+    description: str | None = None
+
+
 class ControlResponse(BaseModel):
     id: int
     framework_id: int

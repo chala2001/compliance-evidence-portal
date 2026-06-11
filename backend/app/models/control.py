@@ -13,4 +13,8 @@ class Control(Base):
     description: Mapped[str] = mapped_column(String(1000), nullable=True)
 
     framework: Mapped["Framework"] = relationship("Framework", back_populates="controls")
-    evidence: Mapped[list["Evidence"]] = relationship("Evidence", back_populates="control")
+    evidence: Mapped[list["Evidence"]] = relationship(
+        "Evidence",
+        back_populates="control",
+        cascade="all, delete-orphan",
+    )

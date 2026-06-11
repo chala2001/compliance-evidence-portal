@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 import Paper from "@mui/material/Paper";
@@ -22,7 +22,10 @@ import DialogActions from "@mui/material/DialogActions";
 import IconButton from "@mui/material/IconButton";
 import Tooltip from "@mui/material/Tooltip";
 import { BoltIcon, ArrowRightIcon, CircleCheckFilledIcon, LightbulbOnIcon, XMarkIcon } from "@oxygen-ui/react-icons";
-import { agentApi, frameworksApi, controlsApi } from "../api/client";
+import { agentApi } from "../api/client";
+import ControlPicker from "../components/ControlPicker";
+import ProductPicker from "../components/ProductPicker";
+import FrameworkPicker from "../components/FrameworkPicker";
 import "../index.css";
 
 const PORTAL_PRESETS: { label: string; url: string }[] = [
@@ -103,6 +106,7 @@ type RunState = {
 
 export default function AgentRunner() {
   const queryClient = useQueryClient();
+  const [productId, setProductId] = useSessionState<number | "">("productId", "");
   const [frameworkId, setFrameworkId] = useSessionState<number | "">("frameworkId", "");
   const [controlId, setControlId] = useSessionState<number | "">("controlId", "");
   const [title, setTitle] = useSessionState<string>("title", "");
@@ -137,11 +141,14 @@ export default function AgentRunner() {
   const isPaused = runState?.status === "paused";
 
   const handleStartNewRun = () => {
-    clearSessionState("runId", "runState", "prompt", "status");
+    clearSessionState("runId", "runState", "prompt", "status", "productId", "frameworkId", "controlId");
     setRunId(null);
     setRunState(null);
     setPrompt("");
     setStatus("idle");
+    setProductId("");
+    setFrameworkId("");
+    setControlId("");
     setNextTaskMod("");
     setModSavedFor(null);
     setError(null);
@@ -174,15 +181,17 @@ export default function AgentRunner() {
     }
   };
 
-  const { data: frameworks = [] } = useQuery({
-    queryKey: ["frameworks"],
-    queryFn: frameworksApi.list,
-  });
-  const { data: controls = [] } = useQuery({
-    queryKey: ["controls", frameworkId || undefined],
-    queryFn: () => controlsApi.list(frameworkId || undefined),
-    enabled: !!frameworkId,
-  });
+  const handleResetBrowser = async () => {
+    setPortalError(null);
+    setLoginDone(false);
+    setBrowserUrl(null);
+    try {
+      await agentApi.resetBrowser();
+      setPortalError("Browser reset. Click \"Open Browser & Login\" to start a fresh session.");
+    } catch (err: any) {
+      setPortalError(err.response?.data?.detail || "Failed to reset browser.");
+    }
+  };
 
   const handleRun = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -362,6 +371,17 @@ export default function AgentRunner() {
                 {loginDone ? "Login confirmed" : "I've logged in"}
               </Button>
             )}
+            <Box sx={{ flex: 1 }} />
+            <Button
+              size="small"
+              variant="text"
+              color="inherit"
+              onClick={handleResetBrowser}
+              disabled={openingPortal}
+              sx={{ fontSize: "0.78rem", textTransform: "none", color: "text.secondary" }}
+            >
+              Browser not opening? Reset session
+            </Button>
           </Stack>
 
           {browserUrl && (
@@ -411,41 +431,35 @@ export default function AgentRunner() {
               <Chip label="Optional" size="small" variant="outlined" sx={{ height: 20, fontSize: "0.7rem" }} />
             </Stack>
 
-            <FormControl fullWidth>
-              <InputLabel>Framework</InputLabel>
-              <Select
-                label="Framework"
+            <ProductPicker
+              value={productId}
+              onChange={(id) => {
+                setProductId(id);
+                setFrameworkId("");
+                setControlId("");
+              }}
+              includeAll
+              allLabel="— Just run, don't save as evidence —"
+            />
+
+            {productId !== "" && (
+              <FrameworkPicker
+                productId={productId}
                 value={frameworkId}
-                onChange={(e) => {
-                  setFrameworkId(e.target.value as number | "");
+                onChange={(id) => {
+                  setFrameworkId(id);
                   setControlId("");
                 }}
-              >
-                <MenuItem value="">
-                  <em>— Just run, don't save as evidence —</em>
-                </MenuItem>
-                {frameworks.map((f: any) => (
-                  <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+                placeholderOption="— Select a framework —"
+              />
+            )}
 
             {frameworkId !== "" && (
-              <FormControl fullWidth>
-                <InputLabel>Control</InputLabel>
-                <Select
-                  label="Control"
-                  value={controlId}
-                  onChange={(e) => setControlId(e.target.value as number | "")}
-                >
-                  <MenuItem value="">
-                    <em>— Select a control —</em>
-                  </MenuItem>
-                  {controls.map((c: any) => (
-                    <MenuItem key={c.id} value={c.id}>{c.control_ref} — {c.title}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+              <ControlPicker
+                frameworkId={frameworkId}
+                controlId={controlId}
+                onControlChange={(id) => setControlId(id)}
+              />
             )}
 
             {controlId !== "" && (

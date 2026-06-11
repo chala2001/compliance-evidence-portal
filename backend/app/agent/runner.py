@@ -76,11 +76,43 @@ def _get_browser() -> BrowserSession:
     return _shared_browser
 
 
+async def _reset_shared_browser() -> None:
+    """Kill any cached BrowserSession and force a fresh launch next time."""
+    global _shared_browser
+    if _shared_browser is not None:
+        try:
+            await _shared_browser.kill()
+        except Exception:
+            pass
+        try:
+            await _shared_browser.stop()
+        except Exception:
+            pass
+    _shared_browser = None
+
+
+async def reset_browser() -> dict:
+    await _reset_shared_browser()
+    return {"status": "reset"}
+
+
 async def open_browser_at(url: str) -> dict:
-    browser = _get_browser()
-    await browser.start()
-    await browser.navigate_to(url)
-    return {"status": "opened", "url": url}
+    async def _attempt() -> str:
+        browser = _get_browser()
+        await browser.start()
+        await browser.navigate_to(url)
+        # Verify the browser is actually responsive — a dead BrowserSession
+        # silently accepts navigate_to but can't return a URL.
+        return await browser.get_current_page_url()
+
+    try:
+        current_url = await _attempt()
+        return {"status": "opened", "url": url, "current_url": current_url}
+    except Exception:
+        # Stale or dead singleton — drop it and retry once with a fresh launch.
+        await _reset_shared_browser()
+        current_url = await _attempt()
+        return {"status": "opened", "url": url, "current_url": current_url, "recovered": True}
 
 
 async def get_browser_status() -> dict:

@@ -8,6 +8,7 @@ from app.agent.runner import (
     is_paused,
     open_browser_at,
     pause_runner,
+    reset_browser,
     resume_runner,
     run_agent,
     start_background_run,
@@ -46,6 +47,11 @@ async def open_portal(request: OpenPortalRequest):
 @router.get("/browser-status")
 async def browser_status():
     return await get_browser_status()
+
+
+@router.post("/reset-browser")
+async def reset_browser_endpoint():
+    return await reset_browser()
 
 
 @router.post("/pause")

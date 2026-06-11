@@ -1,13 +1,20 @@
 """
 Run with: python -m app.seed
-Populates frameworks and controls for SOC2, PCI-DSS, and HIPAA.
+Populates a default Product, frameworks (SOC2, PCI-DSS, HIPAA), and their controls.
 """
 
 from app.database import SessionLocal
+from app.models.product import Product
 from app.models.framework import Framework
 from app.models.control import Control
 import app.models.evidence  # noqa: F401 — needed to resolve ORM relationships
 import app.models.submission  # noqa: F401
+
+DEFAULT_PRODUCT_NAME = "WSO2 Cloud"
+DEFAULT_PRODUCT_DESCRIPTION = (
+    "Default product seeded for compliance evidence collection. "
+    "Add more products via POST /api/products/."
+)
 
 SEED_DATA = [
     {
@@ -76,8 +83,20 @@ def seed():
             print("Database already seeded — skipping.")
             return
 
+        # Ensure default Product exists (frameworks now require product_id).
+        product = db.query(Product).filter(Product.name == DEFAULT_PRODUCT_NAME).first()
+        if not product:
+            product = Product(
+                name=DEFAULT_PRODUCT_NAME,
+                description=DEFAULT_PRODUCT_DESCRIPTION,
+            )
+            db.add(product)
+            db.flush()
+            print(f"  Created default product: {DEFAULT_PRODUCT_NAME} (id={product.id})")
+
         for fw_data in SEED_DATA:
             framework = Framework(
+                product_id=product.id,
                 name=fw_data["name"],
                 description=fw_data["description"],
             )
