@@ -14,6 +14,128 @@ DEFAULT_MAX_STEPS = 15
 
 RUNS: dict[str, dict[str, Any]] = {}
 
+
+# Approximate prices in USD per 1 million tokens (input, output).
+# Match by substring against the model name in case-insensitive form.
+# Update when providers change their published rates.
+LLM_PRICING: list[tuple[str, tuple[float, float]]] = [
+    ("gpt-4o-mini", (0.15, 0.60)),
+    ("gpt-4o", (2.50, 10.00)),
+    ("gpt-4.1-mini", (0.40, 1.60)),
+    ("gpt-4.1", (2.00, 8.00)),
+    ("gpt-5-mini", (0.50, 2.00)),
+    ("gpt-5", (5.00, 15.00)),
+    ("claude-haiku", (1.00, 5.00)),
+    ("claude-sonnet", (3.00, 15.00)),
+    ("claude-opus", (15.00, 75.00)),
+    ("gemini-2.5-flash", (0.075, 0.30)),
+    ("gemini-2.0-flash", (0.075, 0.30)),
+    ("gemini-flash", (0.075, 0.30)),
+    ("gemini", (1.25, 5.00)),
+    ("qwen", (0.0, 0.0)),
+    ("llama", (0.0, 0.0)),
+    ("ollama", (0.0, 0.0)),
+]
+
+
+def _resolve_pricing(model: str) -> tuple[float, float]:
+    m = (model or "").lower()
+    for key, prices in LLM_PRICING:
+        if key in m:
+            return prices
+    return (0.0, 0.0)
+
+
+def _compute_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+    in_per_m, out_per_m = _resolve_pricing(model)
+    return round((input_tokens / 1_000_000) * in_per_m + (output_tokens / 1_000_000) * out_per_m, 6)
+
+
+class _TokenCounter:
+    """Aggregates token usage across all LLM calls during one run.
+    Works across browser-use native LLMs (ChatAzureOpenAI, ChatOllama, ...)
+    AND LangChain LLMs (ChatAnthropic, ChatGoogleGenerativeAI)."""
+
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.calls = 0
+
+    def _record_response(self, result) -> None:
+        """Walk the LLM response object and pull whatever usage info we find."""
+        self.calls += 1
+        in_t, out_t = 0, 0
+
+        # Path A: browser-use ChatInvokeCompletion.usage (ChatInvokeUsage)
+        usage = getattr(result, "usage", None)
+        if usage is not None:
+            in_t = getattr(usage, "prompt_tokens", 0) or getattr(usage, "input_tokens", 0) or 0
+            out_t = getattr(usage, "completion_tokens", 0) or getattr(usage, "output_tokens", 0) or 0
+
+        # Path B: LangChain AIMessage with usage_metadata
+        if not in_t and not out_t:
+            meta = getattr(result, "usage_metadata", None)
+            if meta:
+                meta_d = meta if isinstance(meta, dict) else dict(meta)
+                in_t = meta_d.get("input_tokens", 0) or meta_d.get("prompt_tokens", 0) or 0
+                out_t = meta_d.get("output_tokens", 0) or meta_d.get("completion_tokens", 0) or 0
+
+        # Path C: LangChain response_metadata.token_usage
+        if not in_t and not out_t:
+            rmeta = getattr(result, "response_metadata", None) or {}
+            tu = rmeta.get("token_usage") or rmeta.get("usage") or {}
+            in_t = tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0) or 0
+            out_t = tu.get("completion_tokens", 0) or tu.get("output_tokens", 0) or 0
+
+        self.input_tokens += int(in_t or 0)
+        self.output_tokens += int(out_t or 0)
+
+
+def _attach_token_counter(llm) -> _TokenCounter:
+    """Monkey-patch the LLM's ``ainvoke`` (and ``invoke`` if present) so every
+    call records into a counter we control. Idempotent: if already attached,
+    returns the existing counter (so multiple subtasks share one wrapper
+    but each subtask can compute its delta with a snapshot).
+    """
+    existing = getattr(llm, "_compliance_token_counter", None)
+    if existing is not None:
+        return existing
+
+    counter = _TokenCounter()
+    original_ainvoke = getattr(llm, "ainvoke", None)
+    if original_ainvoke is not None:
+        async def tracked_ainvoke(*args, **kwargs):  # noqa: D401
+            result = await original_ainvoke(*args, **kwargs)
+            try:
+                counter._record_response(result)
+            except Exception:
+                pass
+            return result
+        try:
+            llm.ainvoke = tracked_ainvoke  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    original_invoke = getattr(llm, "invoke", None)
+    if original_invoke is not None:
+        def tracked_invoke(*args, **kwargs):
+            result = original_invoke(*args, **kwargs)
+            try:
+                counter._record_response(result)
+            except Exception:
+                pass
+            return result
+        try:
+            llm.invoke = tracked_invoke  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    try:
+        llm._compliance_token_counter = counter  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return counter
+
 _SUBTASK_PATTERN = re.compile(r"^\s*(?:\d+[.)\-:]?|[-*•►▶→])\s+(.+)$")
 
 
@@ -324,8 +446,32 @@ async def _execute_run(
                 subtask_obj["modification"] = mod
 
             full_task = AGENT_INSTRUCTIONS + context_prefix + subtask_obj["text"] + extra
+            counter = _attach_token_counter(llm)
+            counter_before = (counter.input_tokens, counter.output_tokens, counter.calls)
             agent = Agent(task=full_task, llm=llm, browser=browser, use_vision=True)
             history = await agent.run(max_steps=max_steps)
+
+            in_tokens = counter.input_tokens - counter_before[0]
+            out_tokens = counter.output_tokens - counter_before[1]
+            llm_calls = counter.calls - counter_before[2]
+            cost = _compute_cost(in_tokens, out_tokens, settings.AGENT_MODEL)
+            subtask_obj["usage"] = {
+                "input_tokens": in_tokens,
+                "output_tokens": out_tokens,
+                "total_tokens": in_tokens + out_tokens,
+                "llm_calls": llm_calls,
+                "cost_usd": cost,
+                "model": settings.AGENT_MODEL,
+            }
+
+            run["total_usage"] = {
+                "input_tokens": sum(t.get("usage", {}).get("input_tokens", 0) for t in run["subtasks"]),
+                "output_tokens": sum(t.get("usage", {}).get("output_tokens", 0) for t in run["subtasks"]),
+                "total_tokens": sum(t.get("usage", {}).get("total_tokens", 0) for t in run["subtasks"]),
+                "llm_calls": sum(t.get("usage", {}).get("llm_calls", 0) for t in run["subtasks"]),
+                "cost_usd": round(sum(t.get("usage", {}).get("cost_usd", 0.0) for t in run["subtasks"]), 6),
+                "model": settings.AGENT_MODEL,
+            }
 
             result_text = str(history.final_result() or f"Subtask {idx + 1} completed")
             subtask_obj["result"] = result_text
@@ -384,6 +530,14 @@ def start_background_run(
         "completed_at": None,
         "error": None,
         "modifications": {},
+        "total_usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "llm_calls": 0,
+            "cost_usd": 0.0,
+            "model": settings.AGENT_MODEL,
+        },
     }
     asyncio.create_task(_execute_run(run_id, on_subtask_complete=on_subtask_complete))
     return run_id
