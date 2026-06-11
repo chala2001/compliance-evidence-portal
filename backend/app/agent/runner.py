@@ -499,10 +499,45 @@ async def _execute_run(
 
         run["status"] = "completed"
         run["completed_at"] = time.time()
+        _persist_usage_log(run)
     except Exception as e:
         run["status"] = "error"
         run["error"] = str(e)
         run["completed_at"] = time.time()
+        # Still persist whatever tokens we managed to consume before the error
+        _persist_usage_log(run)
+
+
+def _persist_usage_log(run: dict) -> None:
+    """Write one row per completed run to usage_logs. Failure is silent —
+    cost analytics is nice-to-have, never block the user-visible flow."""
+    usage = run.get("total_usage") or {}
+    if usage.get("total_tokens", 0) <= 0:
+        return  # nothing to log
+
+    # Import here to avoid a circular import at module load time
+    from app.database import SessionLocal
+    from app.models.usage_log import UsageLog
+
+    s = SessionLocal()
+    try:
+        row = UsageLog(
+            run_id=run.get("run_id", ""),
+            model=usage.get("model") or settings.AGENT_MODEL,
+            provider=settings.AGENT_PROVIDER,
+            input_tokens=int(usage.get("input_tokens", 0)),
+            output_tokens=int(usage.get("output_tokens", 0)),
+            total_tokens=int(usage.get("total_tokens", 0)),
+            llm_calls=int(usage.get("llm_calls", 0)),
+            cost_usd=float(usage.get("cost_usd", 0.0)),
+            subtask_count=len(run.get("subtasks", [])),
+        )
+        s.add(row)
+        s.commit()
+    except Exception:
+        s.rollback()
+    finally:
+        s.close()
 
 
 def start_background_run(

@@ -6,6 +6,7 @@ import EvidenceList from "./pages/EvidenceList";
 import SubmitEvidence from "./pages/SubmitEvidence";
 import SubmissionHistory from "./pages/SubmissionHistory";
 import AgentRunner from "./pages/AgentRunner";
+import Cost from "./pages/Cost";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="/submit" element={<SubmitEvidence />} />
           <Route path="/history" element={<SubmissionHistory />} />
           <Route path="/agent" element={<AgentRunner />} />
+          <Route path="/cost" element={<Cost />} />
         </Routes>
       </Box>
     </BrowserRouter>
